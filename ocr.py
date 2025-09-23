@@ -65,7 +65,7 @@ def _categorize_text(ocr_text: str, original_filename: str = None) -> str:
         return f"[Categorization Error: {str(e)}]"
 
 
-def process_image(file_or_image, original_filename: str, output_dir: str = "processed") -> Dict[str, str]:
+def process_image(file_or_image, output_dir: str = "processed") -> Dict[str, str]:
     """
     High-level function:
       - Runs OCR
@@ -76,20 +76,29 @@ def process_image(file_or_image, original_filename: str, output_dir: str = "proc
     os.makedirs(output_dir, exist_ok=True)
 
     try:
-        
+        # Ensure correct original filename
+        if isinstance(file_or_image, UploadFile):
+            original_filename = file_or_image.filename
+        elif isinstance(file_or_image, str):  # path
+            original_filename = os.path.basename(file_or_image)
+        else:
+            original_filename = "unknown.jpg"
+
+        # Load image into PIL
         image = _load_image(file_or_image)
 
-        
+        # OCR
         ocr_text = _extract_text(image)
 
-        
+        # Categorize text
         formatted_text = _categorize_text(ocr_text, original_filename)
 
-        
-        base_name = os.path.splitext(original_filename)[0]
+        # Build safe new filename
         ext = os.path.splitext(original_filename)[1] or ".jpg"
         safe_name = formatted_text.replace(" ", "_").replace("/", "-")
         new_filename = f"{safe_name}{ext}"
+
+        # Save processed image
         output_path = os.path.join(output_dir, new_filename)
         image.save(output_path)
 
@@ -101,7 +110,7 @@ def process_image(file_or_image, original_filename: str, output_dir: str = "proc
 
     except Exception as e:
         return {
-            "original_filename": original_filename,
+            "original_filename": original_filename if 'original_filename' in locals() else "unknown",
             "error": str(e)
         }
 
@@ -123,7 +132,7 @@ def process_images_in_batches(
         batch = files[i:i + batch_size]
         for file in batch:
             filename = file.filename if isinstance(file, UploadFile) else os.path.basename(file)
-            result = process_image(file, filename, output_dir)
+            result = process_image(file, output_dir)
             results.append(result)
 
         if i + batch_size < total:

@@ -41,8 +41,13 @@ def root():
 async def upload_images(files: List[UploadFile] = File(...)):
     """
     Upload multiple images at once and store them in UPLOAD_DIR.
+    Clears old files before saving new ones.
     """
     try:
+        # Clear old files
+        for f in os.listdir(UPLOAD_DIR):
+            os.remove(os.path.join(UPLOAD_DIR, f))
+
         saved_files = []
         for file in files:
             file_path = os.path.join(UPLOAD_DIR, file.filename)
@@ -56,12 +61,13 @@ async def upload_images(files: List[UploadFile] = File(...)):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+
 @app.post("/process-ocr")
 def process_ocr():
     """
     Run OCR on uploaded images in batches of 10,
     rename them using the formatted label,
-    and store results in CACHE_FILE.
+    and store only the latest batch in CACHE_FILE.
     """
     try:
         files = os.listdir(UPLOAD_DIR)
@@ -69,17 +75,21 @@ def process_ocr():
 
         for i in range(0, len(files), 10):
             batch = files[i:i + 10]
+            batch_results = []
+
             for file_name in batch:
                 file_path = os.path.join(UPLOAD_DIR, file_name)
-                result = process_image(file_path, PROCESSED_DIR)
-                results.append(result)
+                result = process_image(file_path, output_dir=PROCESSED_DIR)  # ✅ fixed call
+                batch_results.append(result)
 
-            # Add 5s pause between batches to avoid rate limits
+            results.extend(batch_results)
+
+            # Save only the latest batch
+            with open(CACHE_FILE, "w", encoding="utf-8") as f:
+                json.dump(batch_results, f, indent=2, ensure_ascii=False)
+
+            # Pause between batches
             time.sleep(5)
-
-        # Save all OCR results
-        with open(CACHE_FILE, "w", encoding="utf-8") as f:
-            json.dump(results, f, indent=2, ensure_ascii=False)
 
         return {"message": f"OCR completed for {len(results)} images.", "results": results}
 
@@ -111,7 +121,6 @@ def compare_batch():
                 "matches": matches
             })
 
-        
         with open(COMPARE_FILE, "w", encoding="utf-8") as f:
             json.dump(all_matches, f, indent=2, ensure_ascii=False)
 
