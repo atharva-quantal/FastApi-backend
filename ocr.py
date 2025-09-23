@@ -10,7 +10,6 @@ from typing import List, Dict, Union
 
 load_dotenv()
 
-# Configure Gemini API
 API_KEY = os.getenv("GEMINI_KEY")
 if not API_KEY:
     raise RuntimeError("GEMINI_KEY not found in environment variables.")
@@ -77,16 +76,16 @@ def process_image(file_or_image, original_filename: str, output_dir: str = "proc
     os.makedirs(output_dir, exist_ok=True)
 
     try:
-        # Step 1: Load image
+        
         image = _load_image(file_or_image)
 
-        # Step 2: OCR
+        
         ocr_text = _extract_text(image)
 
-        # Step 3: Categorize
+        
         formatted_text = _categorize_text(ocr_text, original_filename)
 
-        # Step 4: Rename & save
+        
         base_name = os.path.splitext(original_filename)[0]
         ext = os.path.splitext(original_filename)[1] or ".jpg"
         safe_name = formatted_text.replace(" ", "_").replace("/", "-")

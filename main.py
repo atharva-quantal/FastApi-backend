@@ -6,9 +6,22 @@ import shutil
 import time
 import json
 
-from ocr import process_image # single function that does OCR + rename
+from ocr import process_image 
 from graphql import get_shopify_data
 from compare_products import compare
+from fastapi.middleware.cors import CORSMiddleware
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
 
 app = FastAPI(title="Wine OCR + Matching API")
 
@@ -101,7 +114,7 @@ def compare_batch():
                 "matches": matches
             })
 
-        # Save compare results
+        
         with open(COMPARE_FILE, "w", encoding="utf-8") as f:
             json.dump(all_matches, f, indent=2, ensure_ascii=False)
 

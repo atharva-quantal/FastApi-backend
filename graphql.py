@@ -21,7 +21,7 @@ def get_shopify_data(force_refresh=False):
             print(f"Cache file is corrupted or unreadable ({e}), fetching from API.")
 
     print("Fetching Shopify data from API...")
-    # Credentials for store
+    
     shop_handle = os.getenv("SHOP_NAME")
     access_token = os.getenv("ACCESS_TOKEN")
     api_version  = os.getenv("API_VERSION")
@@ -41,7 +41,7 @@ def get_shopify_data(force_refresh=False):
     while has_next_page:
         print(f"Fetching page {page}...")
 
-        # GraphQL query with pagination (up to 250 per page)
+        
         query = f"""
         {{
           products(first: 250{f', after: "{after_cursor}"' if after_cursor else ''}) {{
@@ -91,10 +91,9 @@ def get_shopify_data(force_refresh=False):
 
     print(f"Finished fetching {len(product_dict)} products. Caching data locally...")
     
-    # Change 2: Ensure the 'cache' directory exists before writing the file
+    
     os.makedirs(os.path.dirname(CACHE_FILE), exist_ok=True)
     
-    # Save the fetched data to the cache file
     with open(CACHE_FILE, 'w') as f:
         json.dump(product_dict, f, indent=4)
 
