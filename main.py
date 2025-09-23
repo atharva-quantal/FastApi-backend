@@ -11,7 +11,8 @@ from graphql import get_shopify_data
 from compare_products import compare
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI()
+
+app = FastAPI(title="Wine OCR + Matching API")
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,10 +21,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-
-
-app = FastAPI(title="Wine OCR + Matching API")
 
 # Directories
 UPLOAD_DIR = "uploads"
