@@ -70,8 +70,8 @@ def process_image(file_or_image, output_dir: str = "processed") -> Dict[str, str
     High-level function:
       - Runs OCR
       - Categorizes/cleans text
-      - Renames & saves image
-    Returns dict with {original_filename, new_filename, formatted_name}
+      - Saves image with ORIGINAL filename
+    Returns dict with {original_filename, formatted_name}
     """
     os.makedirs(output_dir, exist_ok=True)
 
@@ -93,18 +93,12 @@ def process_image(file_or_image, output_dir: str = "processed") -> Dict[str, str
         # Categorize text
         formatted_text = _categorize_text(ocr_text, original_filename)
 
-        # Build safe new filename
-        ext = os.path.splitext(original_filename)[1] or ".jpg"
-        safe_name = formatted_text.replace(" ", "_").replace("/", "-")
-        new_filename = f"{safe_name}{ext}"
-
-        # Save processed image
-        output_path = os.path.join(output_dir, new_filename)
+        # Save using original filename (no renaming yet)
+        output_path = os.path.join(output_dir, original_filename)
         image.save(output_path)
 
         return {
             "original_filename": original_filename,
-            "new_filename": new_filename,
             "formatted_name": formatted_text
         }
 
@@ -113,6 +107,7 @@ def process_image(file_or_image, output_dir: str = "processed") -> Dict[str, str
             "original_filename": original_filename if 'original_filename' in locals() else "unknown",
             "error": str(e)
         }
+
 
 
 def process_images_in_batches(

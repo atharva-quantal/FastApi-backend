@@ -1,4 +1,5 @@
-from fastapi import FastAPI, UploadFile, File, Query
+# main.py
+from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
 from typing import List
 import os
@@ -9,11 +10,8 @@ import json
 from ocr import process_image
 from graphql import get_shopify_data
 from compare_products import compare
-from shopify_upload import upload_image_to_shopify
 from fastapi.middleware.cors import CORSMiddleware
-
-# ✅ Google Drive imports
-from drive_utils import init_drive, oauth_callback, upload_to_drive
+from shopify_upload import upload_image_to_shopify
 
 app = FastAPI(title="Wine OCR + Matching API")
 
@@ -32,39 +30,6 @@ CACHE_FILE = "ocr_results.json"
 COMPARE_FILE = "compare_results.json"
 
 
-# -------------------------------
-# 🚀 Google Drive Endpoints (moved to top for Swagger ordering)
-# -------------------------------
-@app.get("/init-drive")
-def init_drive_endpoint():
-    """Start Google Drive sign-in and return OAuth URL."""
-    try:
-        return init_drive()
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-
-@app.get("/drive-callback")
-def drive_callback_endpoint(code: str = Query(...), state: str = Query(...)):
-    """Handle Google Drive OAuth callback."""
-    try:
-        return oauth_callback(code, state)
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-
-@app.post("/upload-drive")
-def upload_drive_endpoint():
-    """Upload all processed files to Drive."""
-    try:
-        return upload_to_drive(PROCESSED_DIR)
-    except Exception as e:
-        return JSONResponse(status_code=500, content={"error": str(e)})
-
-
-# -------------------------------
-# Utility functions
-# -------------------------------
 def clear_folder(folder: str):
     """Delete all files inside a folder, keep folder."""
     if os.path.exists(folder):
@@ -94,17 +59,11 @@ def startup_event():
     print("✅ Cleared uploads/, processed/, and cache files at startup")
 
 
-# -------------------------------
-# Root
-# -------------------------------
 @app.get("/")
 def root():
     return {"message": "Wine OCR + Matching API is running 🚀"}
 
 
-# -------------------------------
-# Upload images
-# -------------------------------
 @app.post("/upload-images")
 async def upload_images(files: List[UploadFile] = File(...)):
     """Upload multiple images and clear old ones first."""
@@ -124,12 +83,13 @@ async def upload_images(files: List[UploadFile] = File(...)):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-# -------------------------------
-# Process OCR
-# -------------------------------
 @app.post("/process-ocr")
 def process_ocr():
-    """Run OCR on uploaded images in batches of 10."""
+    """
+    Run OCR on uploaded images in batches of 10,
+    rename them using the formatted label,
+    and store only the latest batch in CACHE_FILE.
+    """
     try:
         files = os.listdir(UPLOAD_DIR)
         results = []
@@ -141,18 +101,13 @@ def process_ocr():
             for file_name in batch:
                 file_path = os.path.join(UPLOAD_DIR, file_name)
                 result = process_image(file_path, output_dir=PROCESSED_DIR)
-
-                # ✅ Ensure required keys exist
-                batch_results.append({
-                    "original_filename": result.get("original_filename", file_name),
-                    "new_filename": result.get("new_filename", file_name),
-                    "formatted_name": result.get("formatted_name", "")
-                })
+                batch_results.append(result)
 
             results.extend(batch_results)
 
+            # Save only the latest batch
             with open(CACHE_FILE, "w", encoding="utf-8") as f:
-                json.dump(results, f, indent=2, ensure_ascii=False)
+                json.dump(batch_results, f, indent=2, ensure_ascii=False)
 
             time.sleep(5)  # rate limiting
 
@@ -162,9 +117,6 @@ def process_ocr():
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-# -------------------------------
-# Compare batch
-# -------------------------------
 @app.post("/compare-batch")
 def compare_batch():
     """Run BM25 + Gemini on all OCR results (from CACHE_FILE)."""
@@ -179,15 +131,10 @@ def compare_batch():
         all_matches = []
 
         for result in ocr_results:
-            formatted_text = result.get("formatted_name", "")
-            image_file = result.get("new_filename") or result.get("original_filename")
-
-            if not formatted_text:
-                continue  # skip empty OCR results
-
+            formatted_text = result["formatted_name"]
             matches = compare(formatted_text, products)
             all_matches.append({
-                "image": image_file,
+                "image": result["new_filename"],
                 "matches": matches
             })
 
@@ -200,18 +147,15 @@ def compare_batch():
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-# -------------------------------
-# Upload to Shopify
-# -------------------------------
 @app.post("/upload-to-shopify")
-def upload_to_shopify_api(gid: str, filename: str,final_name: str):
+def upload_to_shopify(gid: str, filename: str):
     """Upload a processed image to Shopify by product GID."""
     try:
         image_path = os.path.join(PROCESSED_DIR, filename)
         if not os.path.exists(image_path):
             return JSONResponse(status_code=404, content={"error": f"File {filename} not found in processed dir"})
 
-        result = upload_image_to_shopify(image_path, gid,final_name)
+        result = upload_image_to_shopify(image_path, gid)
         return {"message": "Image uploaded successfully", "image": result}
 
     except Exception as e:
