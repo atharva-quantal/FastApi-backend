@@ -1,6 +1,5 @@
-# drive_utils.py
 import os
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import google_auth_oauthlib.flow
 import googleapiclient.discovery
@@ -10,7 +9,7 @@ from googleapiclient.http import MediaFileUpload
 # Global store (replace with DB if multi-user)
 # -------------------------------
 USER_TOKENS: Dict[str, object] = {}
-DRIVE_FOLDER_ID: str = None
+DRIVE_FOLDER_ID: Optional[str] = None
 
 # -------------------------------
 # Client configuration
@@ -29,6 +28,7 @@ CLIENT_CONFIG = {
 
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
 
+
 # -------------------------------
 # Drive Init (Step 1)
 # -------------------------------
@@ -40,9 +40,10 @@ def init_drive() -> Dict[str, str]:
     flow.redirect_uri = CLIENT_CONFIG["web"]["redirect_uris"][0]
 
     auth_url, state = flow.authorization_url(
-        access_type="offline", include_granted_scopes="true"
+        access_type="offline", include_granted_scopes="true", prompt="consent"
     )
-    return {"auth_url": auth_url, "state": state}
+    return {"url": auth_url, "state": state}
+
 
 # -------------------------------
 # Drive Callback (Step 2)
@@ -83,6 +84,19 @@ def oauth_callback(code: str, state: str) -> Dict[str, str]:
         "folder_id": DRIVE_FOLDER_ID
     }
 
+
+# -------------------------------
+# Drive Status (NEW)
+# -------------------------------
+def is_drive_ready() -> Dict[str, object]:
+    """Check if Drive is linked and folder is ready."""
+    return {
+        "linked": "default" in USER_TOKENS,
+        "folder_id": DRIVE_FOLDER_ID,
+        "structure": {"processed_folder": DRIVE_FOLDER_ID} if DRIVE_FOLDER_ID else {}
+    }
+
+
 # -------------------------------
 # Upload to Drive (Step 3)
 # -------------------------------
@@ -90,11 +104,7 @@ def upload_to_drive(
     local_dir: str = "processed",
     rename_map: Dict[str, str] = None
 ) -> Dict[str, List[Dict[str, str]]]:
-    """
-    Upload all files in local_dir to the Drive folder.
-    If rename_map is provided, filenames will be renamed before upload.
-    Example rename_map: {"wine1.jpg": "2012_Chateau_Test.jpg"}
-    """
+    """Upload all files in local_dir to the Drive folder."""
     creds = USER_TOKENS.get("default")
     if not creds:
         return {"error": "Drive not initialized. Call /init-drive first."}
@@ -107,6 +117,8 @@ def upload_to_drive(
     uploaded = []
     for file in os.listdir(local_dir):
         file_path = os.path.join(local_dir, file)
+        if not os.path.isfile(file_path):
+            continue
 
         # Use mapped name if available
         new_name = rename_map.get(file, file) if rename_map else file

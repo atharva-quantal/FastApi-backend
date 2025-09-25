@@ -11,6 +11,7 @@ from graphql import get_shopify_data
 from compare_products import compare
 from shopify_upload import upload_image_to_shopify
 from fastapi.middleware.cors import CORSMiddleware
+from drive_utils import init_drive, oauth_callback, upload_to_drive, is_drive_ready
 
 # ✅ Google Drive imports
 from drive_utils import init_drive, oauth_callback, upload_to_drive
@@ -35,7 +36,7 @@ COMPARE_FILE = "compare_results.json"
 # -------------------------------
 # 🚀 Google Drive Endpoints (moved to top for Swagger ordering)
 # -------------------------------
-@app.get("/init-drive")
+@app.post("/init-drive")
 def init_drive_endpoint():
     """Start Google Drive sign-in and return OAuth URL."""
     try:
@@ -53,14 +54,22 @@ def drive_callback_endpoint(code: str = Query(...), state: str = Query(...)):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+@app.get("/drive-status")
+def drive_status_endpoint():
+    """Check if Drive is linked and ready."""
+    try:
+        return is_drive_ready()
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 @app.post("/upload-drive")
 def upload_drive_endpoint():
     """Upload all processed files to Drive."""
     try:
-        return upload_to_drive(PROCESSED_DIR)
+        return upload_to_drive("processed")
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
-
 
 # -------------------------------
 # Utility functions
