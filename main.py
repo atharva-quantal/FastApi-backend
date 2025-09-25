@@ -5,6 +5,8 @@ import os
 import shutil
 import time
 import json
+from fastapi import FastAPI, APIRouter
+from drive_utils import USER_TOKENS, DRIVE_STRUCTURE
 
 from ocr import process_image
 from graphql import get_shopify_data
@@ -280,3 +282,17 @@ def refresh_shopify_cache():
         }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+router = APIRouter()
+
+@router.get("/debug-drive-structure")
+def debug_drive_structure():
+    """TEMP: Debug Drive folder structure in production."""
+    return {
+        "user_tokens": list(USER_TOKENS.keys()),
+        "drive_structure": DRIVE_STRUCTURE,
+    }
+
+# Mount router
+app.include_router(router)
