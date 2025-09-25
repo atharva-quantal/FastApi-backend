@@ -1,9 +1,9 @@
 import os
 from typing import Dict, List, Optional
 
-
 import google_auth_oauthlib.flow
 import googleapiclient.discovery
+from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 from fastapi.responses import RedirectResponse
 
@@ -76,6 +76,32 @@ def _ensure_folder(service, name: str, parent: Optional[str] = None) -> str:
     folder = service.files().create(body=metadata, fields="id").execute()
     return folder["id"]
 
+
+def _get_or_create_structure(service) -> Dict[str, str]:
+    """Rebuild Drive folder structure (auto-heal for empty DRIVE_STRUCTURE)."""
+    root_id = _ensure_folder(service, "WineOCR_Processed")
+
+    input_id = _ensure_folder(service, "Input", root_id)
+    output_id = _ensure_folder(service, "Output", root_id)
+    upload_id = _ensure_folder(service, "Upload", root_id)
+    nhr_id = _ensure_folder(service, "NHR", root_id)
+
+    nhr_structure = {
+        "search_failed": _ensure_folder(service, "search_failed", nhr_id),
+        "ocr_failed": _ensure_folder(service, "ocr_failed", nhr_id),
+        "manual_rejection": _ensure_folder(service, "manual_rejection", nhr_id),
+        "others": _ensure_folder(service, "others", nhr_id),
+    }
+
+    return {
+        "root": root_id,
+        "input": input_id,
+        "output": output_id,
+        "upload": upload_id,
+        "nhr": {"root": nhr_id, **nhr_structure}
+    }
+
+
 # -------------------------------
 # Drive Init (Step 1)
 # -------------------------------
@@ -91,11 +117,10 @@ def init_drive() -> Dict[str, str]:
     )
     return {"url": auth_url, "state": state}
 
+
 # -------------------------------
 # Drive Callback (Step 2)
 # -------------------------------
-from fastapi.responses import RedirectResponse
-
 def oauth_callback(code: str, state: str):
     """Exchange code for tokens and create necessary folders, then redirect."""
     global DRIVE_FOLDER_ID, DRIVE_STRUCTURE
@@ -110,35 +135,13 @@ def oauth_callback(code: str, state: str):
         credentials = flow.credentials
         USER_TOKENS["default"] = credentials
 
-        service = googleapiclient.discovery.build("drive", "v3", credentials=credentials)
+        service = build("drive", "v3", credentials=credentials)
 
-        # Main folder
-        DRIVE_FOLDER_ID = _ensure_folder(service, "WineOCR_Processed")
+        # Create folders
+        DRIVE_STRUCTURE = _get_or_create_structure(service)
+        DRIVE_FOLDER_ID = DRIVE_STRUCTURE["root"]
 
-        # Subfolders
-        input_id = _ensure_folder(service, "Input", DRIVE_FOLDER_ID)
-        output_id = _ensure_folder(service, "Output", DRIVE_FOLDER_ID)
-        upload_id = _ensure_folder(service, "Upload", DRIVE_FOLDER_ID)
-        nhr_id = _ensure_folder(service, "NHR", DRIVE_FOLDER_ID)
-
-        # NHR subfolders
-        nhr_structure = {
-            "search_failed": _ensure_folder(service, "search_failed", nhr_id),
-            "ocr_failed": _ensure_folder(service, "ocr_failed", nhr_id),
-            "manual_rejection": _ensure_folder(service, "manual_rejection", nhr_id),
-            "others": _ensure_folder(service, "others", nhr_id),
-        }
-
-        # Save structure internally (not exposed to frontend)
-        DRIVE_STRUCTURE = {
-            "root": DRIVE_FOLDER_ID,
-            "input": input_id,
-            "output": output_id,
-            "upload": upload_id,
-            "nhr": {"root": nhr_id, **nhr_structure}
-        }
-
-        # 🔥 Instead of returning JSON, redirect user directly
+        # ✅ Redirect back to frontend with success
         return RedirectResponse(url=f"{FRONTEND_URL}?drive_connected=success")
 
     except Exception as e:
@@ -154,6 +157,7 @@ def is_drive_ready() -> Dict[str, object]:
         "linked": "default" in USER_TOKENS
     }
 
+
 # -------------------------------
 # Upload to Drive (Step 3)
 # -------------------------------
@@ -167,10 +171,12 @@ def upload_to_drive(
     if not creds:
         return {"error": "Drive not initialized. Call /init-drive first."}
 
-    if not DRIVE_STRUCTURE:
-        return {"error": "Drive folder structure not set. Complete OAuth callback first."}
+    service = build("drive", "v3", credentials=creds)
 
-    service = googleapiclient.discovery.build("drive", "v3", credentials=creds)
+    # ✅ Auto-heal if DRIVE_STRUCTURE is empty
+    global DRIVE_STRUCTURE
+    if not DRIVE_STRUCTURE:
+        DRIVE_STRUCTURE = _get_or_create_structure(service)
 
     # Resolve folder ID
     folder_id = None
@@ -196,7 +202,7 @@ def upload_to_drive(
             drive_file = service.files().create(
                 body={"name": new_name, "parents": [folder_id]},
                 media_body=media,
-                fields="id, name"
+                fields="id, name, webViewLink"
             ).execute()
 
             uploaded.append(drive_file)
