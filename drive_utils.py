@@ -4,6 +4,7 @@ from typing import Dict, List, Optional
 import google_auth_oauthlib.flow
 import googleapiclient.discovery
 from googleapiclient.http import MediaFileUpload
+from fastapi.responses import RedirectResponse
 
 # -------------------------------
 # Global store (replace with DB if multi-user)
@@ -92,8 +93,10 @@ def init_drive() -> Dict[str, str]:
 # -------------------------------
 # Drive Callback (Step 2)
 # -------------------------------
-def oauth_callback(code: str, state: str) -> Dict[str, str]:
-    """Exchange code for tokens and create necessary folders."""
+from fastapi.responses import RedirectResponse
+
+def oauth_callback(code: str, state: str):
+    """Exchange code for tokens and create necessary folders, then redirect."""
     global DRIVE_FOLDER_ID, DRIVE_STRUCTURE
 
     try:
@@ -134,16 +137,12 @@ def oauth_callback(code: str, state: str) -> Dict[str, str]:
             "nhr": {"root": nhr_id, **nhr_structure}
         }
 
-        return {
-            "message": "Google Drive connected ✅",
-            "redirect_to": f"{FRONTEND_URL}"
-        }
-        
+        # 🔥 Instead of returning JSON, redirect user directly
+        return RedirectResponse(url=f"{FRONTEND_URL}?drive_connected=success")
+
     except Exception as e:
-        return {
-            "error": f"OAuth callback failed: {str(e)}",
-            "redirect_to": f"{FRONTEND_URL}?drive_error={str(e)}"
-        }
+        return RedirectResponse(url=f"{FRONTEND_URL}?drive_error={str(e)}")
+
 
 # -------------------------------
 # Drive Status
