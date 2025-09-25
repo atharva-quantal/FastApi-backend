@@ -23,6 +23,9 @@ REDIRECT_URI = os.getenv(
     "https://fastapi-backend-4wqb.onrender.com/drive-callback"
 )
 
+# Add frontend URL for redirecting after OAuth
+FRONTEND_URL = os.getenv("FRONTEND_URL", "https://david-f-frontend.vercel.app")
+
 if not CLIENT_ID or not CLIENT_SECRET:
     raise ValueError("❌ Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET in environment variables")
 
@@ -93,46 +96,54 @@ def oauth_callback(code: str, state: str) -> Dict[str, str]:
     """Exchange code for tokens and create necessary folders."""
     global DRIVE_FOLDER_ID, DRIVE_STRUCTURE
 
-    flow = google_auth_oauthlib.flow.Flow.from_client_config(
-        CLIENT_CONFIG, scopes=SCOPES, state=state
-    )
-    flow.redirect_uri = REDIRECT_URI
-    flow.fetch_token(code=code)
+    try:
+        flow = google_auth_oauthlib.flow.Flow.from_client_config(
+            CLIENT_CONFIG, scopes=SCOPES, state=state
+        )
+        flow.redirect_uri = REDIRECT_URI
+        flow.fetch_token(code=code)
 
-    credentials = flow.credentials
-    USER_TOKENS["default"] = credentials
+        credentials = flow.credentials
+        USER_TOKENS["default"] = credentials
 
-    service = googleapiclient.discovery.build("drive", "v3", credentials=credentials)
+        service = googleapiclient.discovery.build("drive", "v3", credentials=credentials)
 
-    # Main folder
-    DRIVE_FOLDER_ID = _ensure_folder(service, "WineOCR_Processed")
+        # Main folder
+        DRIVE_FOLDER_ID = _ensure_folder(service, "WineOCR_Processed")
 
-    # Subfolders
-    input_id = _ensure_folder(service, "Input", DRIVE_FOLDER_ID)
-    output_id = _ensure_folder(service, "Output", DRIVE_FOLDER_ID)
-    upload_id = _ensure_folder(service, "Upload", DRIVE_FOLDER_ID)
-    nhr_id = _ensure_folder(service, "NHR", DRIVE_FOLDER_ID)
+        # Subfolders
+        input_id = _ensure_folder(service, "Input", DRIVE_FOLDER_ID)
+        output_id = _ensure_folder(service, "Output", DRIVE_FOLDER_ID)
+        upload_id = _ensure_folder(service, "Upload", DRIVE_FOLDER_ID)
+        nhr_id = _ensure_folder(service, "NHR", DRIVE_FOLDER_ID)
 
-    # NHR subfolders
-    nhr_structure = {
-        "search_failed": _ensure_folder(service, "search_failed", nhr_id),
-        "ocr_failed": _ensure_folder(service, "ocr_failed", nhr_id),
-        "manual_rejection": _ensure_folder(service, "manual_rejection", nhr_id),
-        "others": _ensure_folder(service, "others", nhr_id),
-    }
+        # NHR subfolders
+        nhr_structure = {
+            "search_failed": _ensure_folder(service, "search_failed", nhr_id),
+            "ocr_failed": _ensure_folder(service, "ocr_failed", nhr_id),
+            "manual_rejection": _ensure_folder(service, "manual_rejection", nhr_id),
+            "others": _ensure_folder(service, "others", nhr_id),
+        }
 
-    # Save structure internally (not exposed to frontend)
-    DRIVE_STRUCTURE = {
-        "root": DRIVE_FOLDER_ID,
-        "input": input_id,
-        "output": output_id,
-        "upload": upload_id,
-        "nhr": {"root": nhr_id, **nhr_structure}
-    }
+        # Save structure internally (not exposed to frontend)
+        DRIVE_STRUCTURE = {
+            "root": DRIVE_FOLDER_ID,
+            "input": input_id,
+            "output": output_id,
+            "upload": upload_id,
+            "nhr": {"root": nhr_id, **nhr_structure}
+        }
 
-    return {
-        "message": "Google Drive connected ✅"
-    }
+        return {
+            "message": "Google Drive connected ✅",
+            "redirect_to": f"{FRONTEND_URL}?drive_connected=success"
+        }
+        
+    except Exception as e:
+        return {
+            "error": f"OAuth callback failed: {str(e)}",
+            "redirect_to": f"{FRONTEND_URL}?drive_error={str(e)}"
+        }
 
 # -------------------------------
 # Drive Status
@@ -143,7 +154,6 @@ def is_drive_ready() -> Dict[str, object]:
         "linked": "default" in USER_TOKENS
     }
 
-# -------------------------------
 # -------------------------------
 # Upload to Drive (Step 3)
 # -------------------------------
@@ -174,30 +184,30 @@ def upload_to_drive(
         return {"error": f"Invalid target folder: {target}"}
 
     uploaded = []
-    for file in os.listdir(local_dir):
-        file_path = os.path.join(local_dir, file)
-        if not os.path.isfile(file_path):
-            continue
+    if os.path.exists(local_dir):
+        for file in os.listdir(local_dir):
+            file_path = os.path.join(local_dir, file)
+            if not os.path.isfile(file_path):
+                continue
 
-        new_name = rename_map.get(file, file) if rename_map else file
+            new_name = rename_map.get(file, file) if rename_map else file
 
-        media = MediaFileUpload(file_path, mimetype="image/jpeg")
-        drive_file = service.files().create(
-            body={"name": new_name, "parents": [folder_id]},
-            media_body=media,
-            fields="id, name"
-        ).execute()
+            media = MediaFileUpload(file_path, mimetype="image/jpeg")
+            drive_file = service.files().create(
+                body={"name": new_name, "parents": [folder_id]},
+                media_body=media,
+                fields="id, name"
+            ).execute()
 
-        uploaded.append(drive_file)
+            uploaded.append(drive_file)
 
-        # ✅ Delete file locally after successful upload
-        try:
-            os.remove(file_path)
-        except Exception as e:
-            print(f"Warning: Could not delete {file_path} -> {e}")
+            # ✅ Delete file locally after successful upload
+            try:
+                os.remove(file_path)
+            except Exception as e:
+                print(f"Warning: Could not delete {file_path} -> {e}")
 
     return {
         "message": f"Uploaded {len(uploaded)} files to {target} and cleaned up local copies",
         "files": uploaded,
     }
-
