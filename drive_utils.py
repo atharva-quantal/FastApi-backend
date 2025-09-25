@@ -136,7 +136,7 @@ def oauth_callback(code: str, state: str) -> Dict[str, str]:
 
         return {
             "message": "Google Drive connected ✅",
-            "redirect_to": f"{FRONTEND_URL}?drive_connected=success"
+            "redirect_to": f"{FRONTEND_URL}"
         }
         
     except Exception as e:
