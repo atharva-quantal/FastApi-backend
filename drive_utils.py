@@ -10,24 +10,66 @@ from googleapiclient.http import MediaFileUpload
 # -------------------------------
 USER_TOKENS: Dict[str, object] = {}
 DRIVE_FOLDER_ID: Optional[str] = None
+DRIVE_STRUCTURE: Dict[str, str] = {}  # will hold all folder IDs
 
 # -------------------------------
-# Client configuration
+# Load env vars (MUST exist in Render & local .env)
 # -------------------------------
+CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
+CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
+PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID", "wineocr-project")
+REDIRECT_URI = os.getenv(
+    "GOOGLE_REDIRECT_URI",
+    "https://fastapi-backend-4wqb.onrender.com/drive-callback"
+)
+
+if not CLIENT_ID or not CLIENT_SECRET:
+    raise ValueError("❌ Missing GOOGLE_CLIENT_ID or GOOGLE_CLIENT_SECRET in environment variables")
+
 CLIENT_CONFIG = {
     "web": {
-        "client_id": os.getenv("GOOGLE_CLIENT_ID"),
-        "project_id": os.getenv("GOOGLE_PROJECT_ID"),
+        "client_id": CLIENT_ID,
+        "project_id": PROJECT_ID,
         "auth_uri": "https://accounts.google.com/o/oauth2/auth",
         "token_uri": "https://oauth2.googleapis.com/token",
         "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
-        "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
-        "redirect_uris": [os.getenv("GOOGLE_REDIRECT_URI")]
+        "client_secret": CLIENT_SECRET,
+        "redirect_uris": [REDIRECT_URI],
     }
 }
 
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+SCOPES = [
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive",
+    "openid",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile"
+]
 
+# -------------------------------
+# Helpers
+# -------------------------------
+def _ensure_folder(service, name: str, parent: Optional[str] = None) -> str:
+    """Ensure folder exists; create if not. Returns folder ID."""
+    query = f"name='{name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
+    if parent:
+        query += f" and '{parent}' in parents"
+
+    results = service.files().list(q=query, fields="files(id, name)").execute()
+    items = results.get("files", [])
+
+    if items:
+        return items[0]["id"]
+
+    metadata = {
+        "name": name,
+        "mimeType": "application/vnd.google-apps.folder"
+    }
+    if parent:
+        metadata["parents"] = [parent]
+
+    folder = service.files().create(body=metadata, fields="id").execute()
+    return folder["id"]
 
 # -------------------------------
 # Drive Init (Step 1)
@@ -37,82 +79,99 @@ def init_drive() -> Dict[str, str]:
     flow = google_auth_oauthlib.flow.Flow.from_client_config(
         CLIENT_CONFIG, scopes=SCOPES
     )
-    flow.redirect_uri = CLIENT_CONFIG["web"]["redirect_uris"][0]
+    flow.redirect_uri = REDIRECT_URI
 
     auth_url, state = flow.authorization_url(
         access_type="offline", include_granted_scopes="true", prompt="consent"
     )
     return {"url": auth_url, "state": state}
 
-
 # -------------------------------
 # Drive Callback (Step 2)
 # -------------------------------
 def oauth_callback(code: str, state: str) -> Dict[str, str]:
     """Exchange code for tokens and create necessary folders."""
-    global DRIVE_FOLDER_ID
+    global DRIVE_FOLDER_ID, DRIVE_STRUCTURE
 
     flow = google_auth_oauthlib.flow.Flow.from_client_config(
         CLIENT_CONFIG, scopes=SCOPES, state=state
     )
-    flow.redirect_uri = CLIENT_CONFIG["web"]["redirect_uris"][0]
+    flow.redirect_uri = REDIRECT_URI
     flow.fetch_token(code=code)
 
     credentials = flow.credentials
     USER_TOKENS["default"] = credentials
 
-    # Create folders if not already present
     service = googleapiclient.discovery.build("drive", "v3", credentials=credentials)
 
-    folder_name = "WineOCR_Processed"
-    query = f"name='{folder_name}' and mimeType='application/vnd.google-apps.folder' and trashed=false"
-    results = service.files().list(q=query, fields="files(id, name)").execute()
-    items = results.get("files", [])
+    # Main folder
+    DRIVE_FOLDER_ID = _ensure_folder(service, "WineOCR_Processed")
 
-    if items:
-        DRIVE_FOLDER_ID = items[0]["id"]
-    else:
-        folder_metadata = {
-            "name": folder_name,
-            "mimeType": "application/vnd.google-apps.folder"
-        }
-        folder = service.files().create(body=folder_metadata, fields="id").execute()
-        DRIVE_FOLDER_ID = folder["id"]
+    # Subfolders
+    input_id = _ensure_folder(service, "Input", DRIVE_FOLDER_ID)
+    output_id = _ensure_folder(service, "Output", DRIVE_FOLDER_ID)
+    upload_id = _ensure_folder(service, "Upload", DRIVE_FOLDER_ID)
+    nhr_id = _ensure_folder(service, "NHR", DRIVE_FOLDER_ID)
 
-    return {
-        "message": f"Signed in successfully. Folder ready: {folder_name}",
-        "folder_id": DRIVE_FOLDER_ID
+    # NHR subfolders
+    nhr_structure = {
+        "search_failed": _ensure_folder(service, "search_failed", nhr_id),
+        "ocr_failed": _ensure_folder(service, "ocr_failed", nhr_id),
+        "manual_rejection": _ensure_folder(service, "manual_rejection", nhr_id),
+        "others": _ensure_folder(service, "others", nhr_id),
     }
 
+    # Save structure internally (not exposed to frontend)
+    DRIVE_STRUCTURE = {
+        "root": DRIVE_FOLDER_ID,
+        "input": input_id,
+        "output": output_id,
+        "upload": upload_id,
+        "nhr": {"root": nhr_id, **nhr_structure}
+    }
+
+    return {
+        "message": "Google Drive connected ✅"
+    }
 
 # -------------------------------
-# Drive Status (NEW)
+# Drive Status
 # -------------------------------
 def is_drive_ready() -> Dict[str, object]:
     """Check if Drive is linked and folder is ready."""
     return {
-        "linked": "default" in USER_TOKENS,
-        "folder_id": DRIVE_FOLDER_ID,
-        "structure": {"processed_folder": DRIVE_FOLDER_ID} if DRIVE_FOLDER_ID else {}
+        "linked": "default" in USER_TOKENS
     }
 
-
+# -------------------------------
 # -------------------------------
 # Upload to Drive (Step 3)
 # -------------------------------
 def upload_to_drive(
     local_dir: str = "processed",
-    rename_map: Dict[str, str] = None
+    rename_map: Dict[str, str] = None,
+    target: str = "output"  # e.g. "input", "output", "upload", "nhr.search_failed"
 ) -> Dict[str, List[Dict[str, str]]]:
-    """Upload all files in local_dir to the Drive folder."""
+    """Upload all files in local_dir to the correct Drive subfolder and delete them locally after upload."""
     creds = USER_TOKENS.get("default")
     if not creds:
         return {"error": "Drive not initialized. Call /init-drive first."}
 
-    if not DRIVE_FOLDER_ID:
-        return {"error": "Drive folder not set. Complete OAuth callback first."}
+    if not DRIVE_STRUCTURE:
+        return {"error": "Drive folder structure not set. Complete OAuth callback first."}
 
     service = googleapiclient.discovery.build("drive", "v3", credentials=creds)
+
+    # Resolve folder ID
+    folder_id = None
+    if target.startswith("nhr."):
+        _, sub = target.split(".", 1)
+        folder_id = DRIVE_STRUCTURE["nhr"].get(sub)
+    else:
+        folder_id = DRIVE_STRUCTURE.get(target)
+
+    if not folder_id:
+        return {"error": f"Invalid target folder: {target}"}
 
     uploaded = []
     for file in os.listdir(local_dir):
@@ -120,18 +179,25 @@ def upload_to_drive(
         if not os.path.isfile(file_path):
             continue
 
-        # Use mapped name if available
         new_name = rename_map.get(file, file) if rename_map else file
 
         media = MediaFileUpload(file_path, mimetype="image/jpeg")
         drive_file = service.files().create(
-            body={"name": new_name, "parents": [DRIVE_FOLDER_ID]},
+            body={"name": new_name, "parents": [folder_id]},
             media_body=media,
             fields="id, name"
         ).execute()
+
         uploaded.append(drive_file)
 
+        # ✅ Delete file locally after successful upload
+        try:
+            os.remove(file_path)
+        except Exception as e:
+            print(f"Warning: Could not delete {file_path} -> {e}")
+
     return {
-        "message": f"Uploaded {len(uploaded)} files",
-        "files": uploaded
+        "message": f"Uploaded {len(uploaded)} files to {target} and cleaned up local copies",
+        "files": uploaded,
     }
+
