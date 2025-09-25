@@ -13,21 +13,17 @@ from shopify_upload import upload_image_to_shopify
 from fastapi.middleware.cors import CORSMiddleware
 from drive_utils import init_drive, oauth_callback, upload_to_drive, is_drive_ready
 
-# ✅ Google Drive imports
-from drive_utils import init_drive, oauth_callback, upload_to_drive
-
 app = FastAPI(title="Wine OCR + Matching API")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "http://localhost:5173",  # add when deployed
+        "https://david-f-frontend.vercel.app/",  # add prod frontend when deployed
     ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 # Directories & cache files
 UPLOAD_DIR = "uploads"
@@ -37,7 +33,7 @@ COMPARE_FILE = "compare_results.json"
 
 
 # -------------------------------
-# 🚀 Google Drive Endpoints (moved to top for Swagger ordering)
+# 🚀 Google Drive Endpoints
 # -------------------------------
 @app.post("/init-drive")
 def init_drive_endpoint():
@@ -68,11 +64,46 @@ def drive_status_endpoint():
 
 @app.post("/upload-drive")
 def upload_drive_endpoint():
-    """Upload all processed files to Drive."""
+    """
+    Upload processed & renamed images (after compare step) to Google Drive.
+    """
     try:
-        return upload_to_drive("processed")
+        if not os.path.exists(COMPARE_FILE):
+            return JSONResponse(status_code=400, content={"error": "No compare results found. Run /compare-batch first."})
+
+        with open(COMPARE_FILE, "r", encoding="utf-8") as f:
+            compare_results = json.load(f)
+
+        files_to_upload = []
+        for result in compare_results:
+            image_name = result.get("image")
+            matches = result.get("matches", [])
+
+            if not matches:
+                continue
+
+            # ✅ Take best match (index 0) as final name
+            final_name = matches[0]["name"].replace(" ", "_")
+
+            processed_path = os.path.join(PROCESSED_DIR, image_name)
+            if os.path.exists(processed_path):
+                new_filename = f"{final_name}.jpg"
+                new_path = os.path.join(PROCESSED_DIR, new_filename)
+
+                # rename locally before upload
+                os.rename(processed_path, new_path)
+
+                files_to_upload.append(new_path)
+
+        if not files_to_upload:
+            return {"message": "No images to upload (no matches found)"}
+
+        drive_response = upload_to_drive(files_to_upload)
+        return {"message": "Uploaded images to Drive", "files": drive_response}
+
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+
 
 # -------------------------------
 # Utility functions
@@ -216,15 +247,36 @@ def compare_batch():
 # Upload to Shopify
 # -------------------------------
 @app.post("/upload-to-shopify")
-def upload_to_shopify_api(gid: str, filename: str,final_name: str):
+def upload_to_shopify_api(gid: str, filename: str, final_name: str):
     """Upload a processed image to Shopify by product GID."""
     try:
         image_path = os.path.join(PROCESSED_DIR, filename)
         if not os.path.exists(image_path):
             return JSONResponse(status_code=404, content={"error": f"File {filename} not found in processed dir"})
 
-        result = upload_image_to_shopify(image_path, gid,final_name)
+        result = upload_image_to_shopify(image_path, gid, final_name)
         return {"message": "Image uploaded successfully", "image": result}
 
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# -------------------------------
+# Refresh Shopify Cache
+# -------------------------------
+@app.post("/refresh-shopify-cache")
+def refresh_shopify_cache():
+    """
+    Force refresh Shopify product data and overwrite cache file.
+    """
+    try:
+        products = get_shopify_data(force_refresh=True)
+        if not products:
+            return JSONResponse(status_code=500, content={"error": "Failed to refresh Shopify data"})
+        
+        return {
+            "message": f"Refreshed cache with {len(products)} products.",
+            "cache_file": "cache/shopify_products.json"
+        }
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
