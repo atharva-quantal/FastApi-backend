@@ -13,8 +13,7 @@ from graphql import get_shopify_data
 from compare_products import compare
 from shopify_upload import upload_image_to_shopify
 from fastapi.middleware.cors import CORSMiddleware
-from drive_utils import oauth_callback, upload_to_drive
-from drive_utils import init_drive, is_drive_ready
+from drive_utils import init_drive, oauth_callback, upload_to_drive, is_drive_ready
 
 app = FastAPI(title="Wine OCR + Matching API")
 
