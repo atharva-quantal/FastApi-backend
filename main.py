@@ -20,11 +20,15 @@ app = FastAPI(title="Wine OCR + Matching API")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:5173",
+        "https://your-frontend-domain.com",  # add when deployed
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
 
 # Directories & cache files
 UPLOAD_DIR = "uploads"
