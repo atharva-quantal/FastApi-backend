@@ -18,7 +18,7 @@ app = FastAPI(title="Wine OCR + Matching API")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://david-f-frontend.vercel.app/",  # add prod frontend when deployed
+        "https://david-f-frontend.vercel.app",  # add prod frontend when deployed
     ],
     allow_credentials=True,
     allow_methods=["*"],
