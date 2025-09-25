@@ -202,6 +202,31 @@ def upload_to_drive(
 
 
 # ============================================================
+# Init + Status (for compatibility with main.py)
+# ============================================================
+def init_drive() -> Dict[str, str]:
+    """Generate Google OAuth consent URL for Drive sign-in."""
+    flow = google_auth_oauthlib.flow.Flow.from_client_config(
+        CLIENT_CONFIG, scopes=SCOPES
+    )
+    flow.redirect_uri = REDIRECT_URI
+
+    auth_url, state = flow.authorization_url(
+        access_type="offline", include_granted_scopes="true", prompt="consent"
+    )
+    return {"url": auth_url, "state": state}
+
+
+def is_drive_ready() -> Dict[str, object]:
+    """Check if Drive is linked and folder structure is ready."""
+    return {
+        "linked": "default" in USER_TOKENS,
+        "has_structure": bool(DRIVE_STRUCTURE),
+    }
+
+
+
+# ============================================================
 # Load state on import
 # ============================================================
 load_drive_state()
