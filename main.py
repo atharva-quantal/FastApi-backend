@@ -10,7 +10,7 @@ import tempfile
 
 from drive_utils import (
     USER_TOKENS, USER_DRIVE_STRUCTURES, init_drive, oauth_callback,
-    upload_file_to_drive, is_drive_ready, debug_drive_structure,
+    upload_to_drive, is_drive_ready, debug_drive_structure,
     get_user_id_from_credentials
 )
 
@@ -129,7 +129,7 @@ def finalize_upload_endpoint(
 
             for folder in target_folders:
                 try:
-                    result = upload_file_to_drive(
+                    result = upload_to_drive(
                         user_id=user_id,
                         local_path=temp_path,
                         final_name=final_name if folder != "input" else image_name,
