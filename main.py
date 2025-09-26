@@ -118,11 +118,22 @@ def drive_status_endpoint(user_id: Optional[str] = Query(None)):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-@app.post("/upload-drive-selected")
-def upload_drive_selected_endpoint(selections: List[dict], user_id: Optional[str] = Query(None)):
+@app.post("/upload-to-drive")
+def upload_to_drive_endpoint(
+    selections: List[dict],
+    user_id: Optional[str] = Query(None)
+):
     """
     Upload images with user-selected names and target folders to Google Drive.
-    Expected format: [{"image": "file.jpg", "selected_name": "Product Name", "target": "output", "nhr_reason": "search_failed"}]
+    selections format:
+    [
+        {
+            "image": "file.jpg",
+            "selected_name": "Product Name",
+            "target": "output" | "nhr",
+            "nhr_reason": "search_failed" | "ocr_failed" | "manual_rejection" | "others"
+        }
+    ]
     """
     try:
         if not user_id:
@@ -130,7 +141,7 @@ def upload_drive_selected_endpoint(selections: List[dict], user_id: Optional[str
                 status_code=400,
                 content={"error": "user_id parameter is required"}
             )
-        
+
         # Check Drive connection
         drive_status = is_drive_ready(user_id)
         if not drive_status.get("linked", False):
@@ -138,100 +149,64 @@ def upload_drive_selected_endpoint(selections: List[dict], user_id: Optional[str
                 status_code=400,
                 content={"error": f"Drive not connected for user {user_id}. Please connect Drive first."}
             )
-        
-        # Load compare results for file info
-        if not os.path.exists(COMPARE_FILE):
-            return JSONResponse(
-                status_code=400,
-                content={"error": "No compare results found. Run comparison first."}
-            )
 
-        with open(COMPARE_FILE, "r", encoding="utf-8") as f:
-            compare_results = json.load(f)
-        
-        results_lookup = {result["image"]: result for result in compare_results}
-        
         # Track which files go to which folders
-        files_by_folder = {
-            "input": [],
-            "output": [],
-            "upload": [],
-            "nhr/search_failed": [],
-            "nhr/ocr_failed": [],
-            "nhr/manual_rejection": [],
-            "nhr/others": []
-        }
-        
-        # Process each selection and move files to appropriate folders
+        files_by_folder = {}
+
         for selection in selections:
             image_name = selection.get("image")
             selected_name = selection.get("selected_name")
             target = selection.get("target", "output")
             nhr_reason = selection.get("nhr_reason")
-            
+
             if not all([image_name, selected_name]):
                 continue
-            
+
             # Clean filename
             final_name = f"{selected_name.replace(' ', '_').replace('/', '_').replace('\\', '_')}.jpg"
-            
-            # Determine target folders based on selection
+
+            # Determine target folders
             if target == "nhr" and nhr_reason:
                 target_folders = [f"nhr/{nhr_reason}"]
             else:
-                target_folders = ["output", "upload"]  # Valid matches go to both
-            
-            # Move file to appropriate folders
+                target_folders = ["output", "upload"]
+
+            # Always also keep original in input
+            target_folders.append("input")
+
+            # Move file to folders
             source_path = os.path.join(PROCESSED_DIR, image_name)
-            if os.path.exists(source_path):
-                try:
-                    moved_paths = move_file_to_folders(
-                        source_path,
-                        final_name,
-                        target_folders,
-                        PROCESSED_DIR
-                    )
-                    
-                    # Track files by folder for upload
-                    for folder in target_folders:
-                        files_by_folder[folder].append({
-                            "original": image_name,
-                            "final_name": final_name,
-                            "path": moved_paths[target_folders.index(folder)]
-                        })
-                except Exception as e:
-                    print(f"❌ Error moving {image_name}: {e}")
-        
-        # Upload files from each folder
-        upload_folders = [folder for folder, files in files_by_folder.items() if files]
-        
-        if not upload_folders:
-            return {"message": "No files to upload", "user_id": user_id}
-        
-        print(f"📂 Preparing to upload for user {user_id}. Folders: {upload_folders}")
-        for folder, files in files_by_folder.items():
-            if files:
-                print(f"   └── {folder}: {[f['final_name'] for f in files]}")
-        
-        # Perform batch upload for all folders
+            moved_paths = move_file_to_folders(
+                source_path,
+                final_name,
+                target_folders,
+                PROCESSED_DIR
+            )
+
+            for i, folder in enumerate(target_folders):
+                files_by_folder.setdefault(folder, []).append({
+                    "original": image_name,
+                    "final_name": final_name,
+                    "path": moved_paths[i]
+                })
+
+        # Call drive_utils uploader
         upload_result = upload_to_drive(
             user_id=user_id,
             local_dir=PROCESSED_DIR,
-            target_folders=upload_folders
+            target_folders=list(files_by_folder.keys())
         )
-        
-        print(f"✅ Upload finished for user {user_id}")
-        
+
         return {
-            "message": f"Upload complete. Processed {len(selections)} selections across {len(upload_folders)} folders.",
+            "message": f"Upload complete. Processed {len(selections)} selections.",
             "upload_result": upload_result,
             "user_id": user_id
         }
 
     except Exception as e:
-        print(f"🚨 Upload error: {str(e)}")
         import traceback
-        print(f"Traceback: {traceback.format_exc()}")
+        print(f"🚨 Upload error: {e}")
+        print(traceback.format_exc())
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
@@ -407,15 +382,6 @@ def upload_to_shopify_batch(selections: List[dict]):
 # -----------------------------------------
 # Alias endpoint for backward compatibility
 # -----------------------------------------
-@app.post("/upload-to-drive")
-def upload_to_drive_alias(
-    selections: List[dict],
-    user_id: Optional[str] = Query(None)
-):
-    """
-    Alias for /upload-drive-selected so existing frontend calls keep working.
-    """
-    return upload_drive_selected_endpoint(selections, user_id)
 
 # -------------------------------
 # Debug routes
