@@ -366,36 +366,25 @@ def upload_to_drive(
     target_folders: List[str] = None,
 ) -> Dict[str, List[Dict[str, str]]]:
     """Upload all files from specified folders to corresponding Drive locations."""
-    print(f"🚀 Starting upload_to_drive for user {user_id}...")
-    print(f"📂 Local dir: {local_dir}, Target folders: {target_folders}")
-
     if not target_folders:
         target_folders = ["output", "upload"]  # Default folders to check
-        print(f"⚠️ No target_folders provided, defaulting to: {target_folders}")
         
     creds = USER_TOKENS.get(user_id)
     if not creds:
-        print(f"❌ No credentials found for {user_id}")
         return {"error": f"Drive not initialized for user {user_id}. Call /init-drive first."}
 
     if not refresh_credentials_if_needed(creds):
-        print(f"❌ Could not refresh credentials for {user_id}")
         return {"error": "Failed to refresh expired credentials"}
 
     service = build("drive", "v3", credentials=creds)
     structure = get_folder_structure(service, user_id)
-
-    print(f"📑 Resolved Drive folder structure for {user_id}: {json.dumps(structure, indent=2)}")
-
+    
     uploaded_files = []
     errors = []
 
     for folder in target_folders:
         folder_path = os.path.join(local_dir, folder)
-        print(f"🔎 Checking local folder: {folder_path}")
-
         if not os.path.exists(folder_path):
-            print(f"⚠️ Local folder does not exist: {folder_path}")
             continue
 
         # Determine Drive folder ID based on path
@@ -403,15 +392,11 @@ def upload_to_drive(
         if folder.startswith("nhr/"):
             nhr_type = folder.split("/")[1]
             drive_folder_id = structure["nhr"].get(nhr_type)
-            print(f"➡️ Target NHR subfolder '{nhr_type}' → {drive_folder_id}")
         else:
             drive_folder_id = structure.get(folder)
-            print(f"➡️ Target normal folder '{folder}' → {drive_folder_id}")
 
         if not drive_folder_id:
-            error_msg = f"❌ Invalid target folder mapping: {folder}"
-            print(error_msg)
-            errors.append(error_msg)
+            errors.append(f"Invalid target folder: {folder}")
             continue
 
         # Upload all files in this folder
@@ -419,8 +404,6 @@ def upload_to_drive(
             file_path = os.path.join(folder_path, filename)
             if not os.path.isfile(file_path):
                 continue
-
-            print(f"⬆️ Preparing to upload {file_path} → Drive folder {drive_folder_id}")
 
             try:
                 media = MediaFileUpload(file_path, mimetype="image/jpeg")
@@ -436,19 +419,15 @@ def upload_to_drive(
                     "target_folder": folder
                 })
 
-                print(f"✅ Uploaded {filename} to folder {folder} (Drive ID: {drive_file['id']})")
-
                 # Clean up local file after successful upload
                 try:
                     os.remove(file_path)
-                    print(f"🗑️ Deleted local file after upload: {file_path}")
+                    print(f"✅ Uploaded and deleted: {file_path}")
                 except Exception as e:
                     print(f"⚠️ Warning: Could not delete {file_path} -> {e}")
 
             except Exception as e:
-                error_msg = f"❌ Failed to upload {filename} to {folder}: {str(e)}"
-                print(error_msg)
-                errors.append(error_msg)
+                errors.append(f"Failed to upload {filename} to {folder}: {str(e)}")
 
     response = {
         "message": f"Uploaded {len(uploaded_files)} files across {len(target_folders)} folders",
@@ -456,7 +435,6 @@ def upload_to_drive(
     }
     
     if errors:
-        print(f"⚠️ Errors encountered: {errors}")
         response["errors"] = errors
 
     return response
