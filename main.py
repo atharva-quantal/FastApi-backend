@@ -137,10 +137,24 @@ class DriveUploadRequest(BaseModel):
 # -------------------------------
 # Drive Endpoints
 # -------------------------------
+from fastapi import Body
+
 @app.post("/upload-to-drive")
-def upload_to_drive_endpoint(payload: DriveUploadRequest):
+def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
     """
     Upload images with user-selected names and target folders to Google Drive.
+    Expected JSON:
+    {
+        "user_id": "123abc",
+        "selections": [
+            {
+                "image": "file.jpg",
+                "selected_name": "Product Name",
+                "target": "output" | "nhr",
+                "nhr_reason": "search_failed" | "ocr_failed" | "manual_rejection" | "others"
+            }
+        ]
+    }
     """
     try:
         user_id = payload.user_id
@@ -165,19 +179,16 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest):
             if not all([image_name, selected_name]):
                 continue
 
-            # Clean filename
-            final_name = f"{selected_name.replace(' ', '_').replace('/', '_').replace('\\', '_')}.jpg"
+            safe_name = selected_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
+            final_name = f"{safe_name}.jpg"
 
-            # Determine target folders
             if target == "nhr" and nhr_reason:
                 target_folders = [f"nhr/{nhr_reason}"]
             else:
                 target_folders = ["output", "upload"]
 
-            # Always also keep original in input
             target_folders.append("input")
 
-            # Move file to folders
             source_path = os.path.join(PROCESSED_DIR, image_name)
             moved_paths = move_file_to_folders(
                 source_path,
@@ -211,6 +222,8 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest):
         print(f"🚨 Upload error: {e}")
         print(traceback.format_exc())
         return JSONResponse(status_code=500, content={"error": str(e)})
+
+
 
 # -------------------------------
 # Upload & Process Endpoints
