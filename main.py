@@ -118,29 +118,33 @@ def drive_status_endpoint(user_id: Optional[str] = Query(None)):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+from pydantic import BaseModel
+
+# -------------------------------
+# Request models
+# -------------------------------
+class DriveSelection(BaseModel):
+    image: str
+    selected_name: str
+    target: Optional[str] = "output"
+    nhr_reason: Optional[str] = None
+
+class DriveUploadRequest(BaseModel):
+    user_id: str
+    selections: List[DriveSelection]
+
+
+# -------------------------------
+# Drive Endpoints
+# -------------------------------
 @app.post("/upload-to-drive")
-def upload_to_drive_endpoint(
-    selections: List[dict],
-    user_id: Optional[str] = Query(None)
-):
+def upload_to_drive_endpoint(payload: DriveUploadRequest):
     """
     Upload images with user-selected names and target folders to Google Drive.
-    selections format:
-    [
-        {
-            "image": "file.jpg",
-            "selected_name": "Product Name",
-            "target": "output" | "nhr",
-            "nhr_reason": "search_failed" | "ocr_failed" | "manual_rejection" | "others"
-        }
-    ]
     """
     try:
-        if not user_id:
-            return JSONResponse(
-                status_code=400,
-                content={"error": "user_id parameter is required"}
-            )
+        user_id = payload.user_id
+        selections = payload.selections
 
         # Check Drive connection
         drive_status = is_drive_ready(user_id)
@@ -150,14 +154,13 @@ def upload_to_drive_endpoint(
                 content={"error": f"Drive not connected for user {user_id}. Please connect Drive first."}
             )
 
-        # Track which files go to which folders
         files_by_folder = {}
 
         for selection in selections:
-            image_name = selection.get("image")
-            selected_name = selection.get("selected_name")
-            target = selection.get("target", "output")
-            nhr_reason = selection.get("nhr_reason")
+            image_name = selection.image
+            selected_name = selection.selected_name
+            target = selection.target or "output"
+            nhr_reason = selection.nhr_reason
 
             if not all([image_name, selected_name]):
                 continue
@@ -208,8 +211,6 @@ def upload_to_drive_endpoint(
         print(f"🚨 Upload error: {e}")
         print(traceback.format_exc())
         return JSONResponse(status_code=500, content={"error": str(e)})
-
-
 
 # -------------------------------
 # Upload & Process Endpoints
