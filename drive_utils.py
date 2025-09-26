@@ -232,7 +232,7 @@ def init_drive() -> Dict[str, str]:
 # Drive Callback (Step 2)
 # -------------------------------
 def oauth_callback(code: str, state: str):
-    """Exchange code for tokens and create necessary folders, then redirect."""
+    """Exchange code for tokens, create folders, then redirect to frontend."""
     global DRIVE_FOLDER_ID, DRIVE_STRUCTURE
 
     try:
@@ -244,18 +244,33 @@ def oauth_callback(code: str, state: str):
 
         credentials = flow.credentials
         USER_TOKENS["default"] = credentials
-
         service = build("drive", "v3", credentials=credentials)
 
-        # Get or create folders with persistent storage
+        # ✅ Create / verify folder structure
+        print("🔄 Creating/Verifying Drive folder structure...")
         DRIVE_STRUCTURE = get_folder_structure(service)
         DRIVE_FOLDER_ID = DRIVE_STRUCTURE["root"]
+
+        # 🔎 Debug logs
+        print("✅ Drive connected successfully!")
+        print("📂 Folder structure:")
+        for key, val in DRIVE_STRUCTURE.items():
+            if isinstance(val, dict):
+                print(f"  {key}:")
+                for sub, sub_id in val.items():
+                    print(f"    - {sub}: {sub_id}")
+            else:
+                print(f"  {key}: {val}")
 
         # ✅ Redirect back to frontend with success
         return RedirectResponse(url=f"{FRONTEND_URL}?drive_connected=success")
 
     except Exception as e:
+        import traceback
+        print("❌ Error during Drive callback:")
+        print(traceback.format_exc())
         return RedirectResponse(url=f"{FRONTEND_URL}?drive_error={str(e)}")
+
 
 
 # -------------------------------
