@@ -5,8 +5,10 @@ from typing import Dict, List, Optional
 import google_auth_oauthlib.flow
 import googleapiclient.discovery
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload
+from googleapiclient.http import MediaFileUpload, MediaInMemoryUpload
 from fastapi.responses import RedirectResponse
+from google.auth.exceptions import RefreshError
+import traceback
 
 # -------------------------------
 # Global store (replace with DB if multi-user)
@@ -102,6 +104,9 @@ def verify_folder_structure(service, structure: Dict[str, str]) -> bool:
 
         # Check NHR folders
         nhr_structure = structure.get("nhr", {})
+        if not isinstance(nhr_structure, dict):
+            return False
+            
         if not check_folder_exists(nhr_structure.get("root", "")):
             return False
 
@@ -143,6 +148,18 @@ def _ensure_folder(service, name: str, parent: Optional[str] = None) -> str:
     return folder["id"]
 
 
+def refresh_credentials_if_needed(creds):
+    """Refresh credentials if they're expired"""
+    if creds.expired and creds.refresh_token:
+        try:
+            creds.refresh()
+            return True
+        except RefreshError as e:
+            print(f"Failed to refresh credentials: {e}")
+            return False
+    return True
+
+
 def _get_or_create_structure(service) -> Dict[str, str]:
     """Rebuild Drive folder structure and save to pickle file."""
     print("🔄 Creating/verifying Drive folder structure...")
@@ -155,6 +172,7 @@ def _get_or_create_structure(service) -> Dict[str, str]:
     nhr_id = _ensure_folder(service, "NHR", root_id)
 
     nhr_structure = {
+        "root": nhr_id,
         "search_failed": _ensure_folder(service, "search_failed", nhr_id),
         "ocr_failed": _ensure_folder(service, "ocr_failed", nhr_id),
         "manual_rejection": _ensure_folder(service, "manual_rejection", nhr_id),
@@ -166,7 +184,7 @@ def _get_or_create_structure(service) -> Dict[str, str]:
         "input": input_id,
         "output": output_id,
         "upload": upload_id,
-        "nhr": {"root": nhr_id, **nhr_structure}
+        "nhr": nhr_structure
     }
 
     # Save structure to pickle file
@@ -245,15 +263,33 @@ def oauth_callback(code: str, state: str):
 # -------------------------------
 def is_drive_ready() -> Dict[str, object]:
     """Check if Drive is linked and folder is ready."""
+    creds = USER_TOKENS.get("default")
+    if not creds:
+        return {
+            "linked": False,
+            "folder_structure_cached": bool(DRIVE_STRUCTURE),
+            "pickle_file_exists": os.path.exists(FOLDER_STRUCTURE_FILE)
+        }
+    
+    # Check if credentials are valid or can be refreshed
+    valid = True
+    if creds.expired and creds.refresh_token:
+        try:
+            creds.refresh()
+        except RefreshError:
+            valid = False
+    elif creds.expired:
+        valid = False
+    
     return {
-        "linked": "default" in USER_TOKENS,
+        "linked": valid,
         "folder_structure_cached": bool(DRIVE_STRUCTURE),
         "pickle_file_exists": os.path.exists(FOLDER_STRUCTURE_FILE)
     }
 
 
 # -------------------------------
-# Upload to Drive (Step 3)
+# Upload to Drive (Enhanced for user selections)
 # -------------------------------
 def upload_to_drive(
     local_dir: str = "processed",
@@ -264,6 +300,9 @@ def upload_to_drive(
     creds = USER_TOKENS.get("default")
     if not creds:
         return {"error": "Drive not initialized. Call /init-drive first."}
+
+    if not refresh_credentials_if_needed(creds):
+        return {"error": "Failed to refresh expired credentials"}
 
     service = build("drive", "v3", credentials=creds)
 
@@ -313,6 +352,63 @@ def upload_to_drive(
     }
 
 
+def upload_single_file_to_drive(file_bytes: bytes, filename: str, target: str = "output") -> str:
+    """Upload a single file (bytes) to Drive. Returns file ID or raises exception."""
+    try:
+        creds = USER_TOKENS.get("default")
+        if not creds:
+            raise Exception("Drive not initialized. Call /init-drive first.")
+
+        if not refresh_credentials_if_needed(creds):
+            raise Exception("Failed to refresh expired credentials")
+
+        service = build("drive", "v3", credentials=creds)
+
+        # Get folder structure
+        global DRIVE_STRUCTURE
+        DRIVE_STRUCTURE = get_folder_structure(service)
+
+        # Resolve folder ID
+        folder_id = None
+        if target.startswith("nhr."):
+            _, sub = target.split(".", 1)
+            folder_id = DRIVE_STRUCTURE["nhr"].get(sub)
+        else:
+            folder_id = DRIVE_STRUCTURE.get(target)
+
+        if not folder_id:
+            raise Exception(f"Invalid target folder: {target}")
+
+        # Determine appropriate MIME type
+        mime_type = "application/octet-stream"
+        if filename.lower().endswith(('.jpg', '.jpeg')):
+            mime_type = "image/jpeg"
+        elif filename.lower().endswith('.png'):
+            mime_type = "image/png"
+
+        file_metadata = {"name": filename, "parents": [folder_id]}
+        media = MediaInMemoryUpload(file_bytes, mimetype=mime_type)
+
+        print(f"[Drive Upload] Attempting upload: {filename} to {target}")
+        print(f"[Drive Upload] Target folder_id: {folder_id}")
+        print(f"[Drive Upload] File size: {len(file_bytes)} bytes")
+
+        uploaded_file = (
+            service.files()
+            .create(body=file_metadata, media_body=media, fields="id,name,parents,webViewLink")
+            .execute()
+        )
+
+        print(f"[Drive Upload] Success: {uploaded_file}")
+        return uploaded_file.get("id")
+
+    except Exception as e:
+        error_msg = f"Drive upload failed for {filename}: {str(e)}"
+        print(f"[Drive Upload] ERROR: {error_msg}")
+        print(f"[Drive Upload] Traceback: {traceback.format_exc()}")
+        raise Exception(error_msg)
+
+
 # -------------------------------
 # Additional utility functions
 # -------------------------------
@@ -338,6 +434,17 @@ def get_folder_info() -> Dict[str, object]:
         "structure": DRIVE_STRUCTURE,
         "pickle_file_exists": os.path.exists(FOLDER_STRUCTURE_FILE),
         "pickle_file_path": os.path.abspath(FOLDER_STRUCTURE_FILE) if os.path.exists(FOLDER_STRUCTURE_FILE) else None
+    }
+
+
+def debug_drive_structure():
+    """Return debug info about drive structure"""
+    return {
+        "user_tokens": list(USER_TOKENS.keys()),
+        "user_tokens_valid": {k: (v.valid if v else False) for k, v in USER_TOKENS.items()},
+        "user_tokens_expired": {k: (v.expired if v else True) for k, v in USER_TOKENS.items()},
+        "drive_structure": DRIVE_STRUCTURE,
+        "pickle_file_exists": os.path.exists(FOLDER_STRUCTURE_FILE),
     }
 
 

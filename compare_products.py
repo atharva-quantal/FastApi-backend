@@ -43,7 +43,7 @@ def validate_with_gemini(filename, bm25_candidates, model_name="gemini-1.5-flash
     """
     Validates BM25 candidates using Gemini LLM.
     Returns top-3 candidates with 'gid', 'text', 'score', 'reason'.
-    If all scores <= 5, still returns top-3 but flags NHR.
+    If all scores < 6 , still returns top-3 but flags NHR.
     """
     if not bm25_candidates:
         print("No BM25 candidates to validate.")
@@ -217,7 +217,7 @@ def compare(filename, shopify_data):
     gemini_candidates = validate_with_gemini(filename, bm25_candidates)
 
    
-    if all(c.get("score", 0) <= 7 for c in gemini_candidates):
+    if all(c.get("score", 0) < 6 for c in gemini_candidates):
         validated_gid = "0"
         nhr_reason_auto = "All Gemini scores below threshold. Showing top-3 anyway."
         need_human_review = True
