@@ -3,11 +3,12 @@ import pickle
 from typing import Dict, List, Optional
 import hashlib
 import json
+import shutil
 
 import google_auth_oauthlib.flow
 import googleapiclient.discovery
 from googleapiclient.discovery import build
-from googleapiclient.http import MediaFileUpload, MediaInMemoryUpload
+from googleapiclient.http import MediaFileUpload
 from fastapi.responses import RedirectResponse
 from google.auth.exceptions import RefreshError
 import traceback
@@ -65,22 +66,18 @@ SCOPES = [
 def get_user_id_from_credentials(credentials) -> str:
     """Generate a consistent user ID from credentials."""
     try:
-        # Use the token to get user info
         service = build("oauth2", "v2", credentials=credentials)
         user_info = service.userinfo().get().execute()
         email = user_info.get("email", "")
         if email:
-            # Create a hash of the email for consistent user ID
             return hashlib.sha256(email.encode()).hexdigest()[:16]
     except Exception as e:
         print(f"Warning: Could not get user info: {e}")
     
-    # Fallback: use token hash
     token = getattr(credentials, 'token', '')
     if token:
         return hashlib.sha256(str(token).encode()).hexdigest()[:16]
     
-    # Last resort: random ID (not ideal for persistence)
     import time
     return hashlib.sha256(str(time.time()).encode()).hexdigest()[:16]
 
@@ -91,7 +88,7 @@ def get_user_pickle_path(user_id: str) -> str:
 
 
 # -------------------------------
-# Pickle file helpers (now user-specific)
+# Pickle file helpers
 # -------------------------------
 def save_folder_structure(user_id: str, structure: Dict[str, str]) -> None:
     """Save folder structure to user-specific pickle file."""
@@ -128,16 +125,13 @@ def verify_folder_structure(service, structure: Dict[str, str]) -> bool:
             except Exception:
                 return False
 
-        # Check root folder
         if not check_folder_exists(structure.get("root", "")):
             return False
 
-        # Check main folders
         for key in ["input", "output", "upload"]:
             if not check_folder_exists(structure.get(key, "")):
                 return False
 
-        # Check NHR folders
         nhr_structure = structure.get("nhr", {})
         if not isinstance(nhr_structure, dict):
             return False
@@ -156,7 +150,47 @@ def verify_folder_structure(service, structure: Dict[str, str]) -> bool:
 
 
 # -------------------------------
-# Helpers
+# Folder management helpers
+# -------------------------------
+def ensure_local_folders(base_dir: str = "processed") -> None:
+    """Ensure all required local folders exist."""
+    folders = [
+        os.path.join(base_dir, "input"),
+        os.path.join(base_dir, "output"),
+        os.path.join(base_dir, "upload"),
+        os.path.join(base_dir, "nhr", "search_failed"),
+        os.path.join(base_dir, "nhr", "ocr_failed"),
+        os.path.join(base_dir, "nhr", "manual_rejection"),
+        os.path.join(base_dir, "nhr", "others")
+    ]
+    
+    for folder in folders:
+        os.makedirs(folder, exist_ok=True)
+        print(f"✅ Ensured local folder exists: {folder}")
+
+
+def move_file_to_folders(file_path: str, new_name: str, target_folders: List[str], base_dir: str = "processed") -> List[str]:
+    """Move/copy file to multiple target folders."""
+    moved_paths = []
+    
+    for folder in target_folders:
+        target_path = os.path.join(base_dir, folder, new_name)
+        os.makedirs(os.path.dirname(target_path), exist_ok=True)
+        
+        # Copy instead of move for all but the last folder
+        if folder == target_folders[-1] and os.path.exists(file_path):
+            shutil.move(file_path, target_path)
+        else:
+            shutil.copy2(file_path, target_path)
+            
+        moved_paths.append(target_path)
+        print(f"✅ {'Moved' if folder == target_folders[-1] else 'Copied'} file to: {target_path}")
+    
+    return moved_paths
+
+
+# -------------------------------
+# Core Drive functions
 # -------------------------------
 def _ensure_folder(service, name: str, parent: Optional[str] = None) -> str:
     """Ensure folder exists; create if not. Returns folder ID."""
@@ -200,7 +234,6 @@ def _get_or_create_structure(service, user_id: str) -> Dict[str, str]:
     print(f"🔄 Creating/verifying Drive folder structure for user {user_id}...")
     
     root_id = _ensure_folder(service, "WineOCR_Processed")
-
     input_id = _ensure_folder(service, "Input", root_id)
     output_id = _ensure_folder(service, "Output", root_id)
     upload_id = _ensure_folder(service, "Upload", root_id)
@@ -222,17 +255,13 @@ def _get_or_create_structure(service, user_id: str) -> Dict[str, str]:
         "nhr": nhr_structure
     }
 
-    # Save structure to user-specific pickle file
     save_folder_structure(user_id, structure)
-    
     print(f"✅ Drive folder structure created and saved successfully for user {user_id}!")
     return structure
 
 
 def get_folder_structure(service, user_id: str) -> Dict[str, str]:
-    """Get folder structure for specific user - load from pickle or create new one."""
-    
-    # Try to load from user-specific pickle file first
+    """Get folder structure for specific user - load from pickle or create new."""
     if user_id not in USER_DRIVE_STRUCTURES:
         saved_structure = load_folder_structure(user_id)
         
@@ -247,7 +276,7 @@ def get_folder_structure(service, user_id: str) -> Dict[str, str]:
 
 
 # -------------------------------
-# Drive Init (Step 1)
+# Main API functions
 # -------------------------------
 def init_drive() -> Dict[str, str]:
     """Generate Google OAuth consent URL for Drive sign-in."""
@@ -262,9 +291,6 @@ def init_drive() -> Dict[str, str]:
     return {"url": auth_url, "state": state}
 
 
-# -------------------------------
-# Drive Callback (Step 2)
-# -------------------------------
 def oauth_callback(code: str, state: str):
     """Exchange code for tokens, create folders, then redirect to frontend."""
     try:
@@ -275,20 +301,12 @@ def oauth_callback(code: str, state: str):
         flow.fetch_token(code=code)
 
         credentials = flow.credentials
-        
-        # Get user ID from credentials
         user_id = get_user_id_from_credentials(credentials)
-        
-        # Store credentials for this user
         USER_TOKENS[user_id] = credentials
         
         service = build("drive", "v3", credentials=credentials)
-
-        # ✅ Create / verify folder structure for this specific user
-        print(f"🔄 Creating/Verifying Drive folder structure for user {user_id}...")
         structure = get_folder_structure(service, user_id)
 
-        # 🔎 Debug logs
         print(f"✅ Drive connected successfully for user {user_id}!")
         print("📂 Folder structure:")
         for key, val in structure.items():
@@ -299,23 +317,17 @@ def oauth_callback(code: str, state: str):
             else:
                 print(f"  {key}: {val}")
 
-        # ✅ Redirect back to frontend with success and user_id
         return RedirectResponse(url=f"{FRONTEND_URL}?drive_connected=success&user_id={user_id}")
 
     except Exception as e:
-        import traceback
         print("❌ Error during Drive callback:")
         print(traceback.format_exc())
         return RedirectResponse(url=f"{FRONTEND_URL}?drive_error={str(e)}")
 
 
-# -------------------------------
-# Drive Status
-# -------------------------------
 def is_drive_ready(user_id: str = None) -> Dict[str, object]:
     """Check if Drive is linked and folder is ready for a specific user."""
     if not user_id:
-        # Return status for all users if no specific user_id provided
         return {
             "linked": False,
             "error": "No user_id provided",
@@ -331,7 +343,6 @@ def is_drive_ready(user_id: str = None) -> Dict[str, object]:
             "user_id": user_id
         }
     
-    # Check if credentials are valid or can be refreshed
     valid = True
     if creds.expired and creds.refresh_token:
         try:
@@ -349,16 +360,15 @@ def is_drive_ready(user_id: str = None) -> Dict[str, object]:
     }
 
 
-# -------------------------------
-# Upload to Drive (Enhanced for user selections)
-# -------------------------------
 def upload_to_drive(
     user_id: str,
     local_dir: str = "processed",
-    rename_map: Dict[str, str] = None,
-    target: str = "output"  # e.g. "input", "output", "upload", "nhr.search_failed"
+    target_folders: List[str] = None,
 ) -> Dict[str, List[Dict[str, str]]]:
-    """Upload all files in local_dir to the correct Drive subfolder and delete them locally after upload."""
+    """Upload all files from specified folders to corresponding Drive locations."""
+    if not target_folders:
+        target_folders = ["output", "upload"]  # Default folders to check
+        
     creds = USER_TOKENS.get(user_id)
     if not creds:
         return {"error": f"Drive not initialized for user {user_id}. Call /init-drive first."}
@@ -367,113 +377,74 @@ def upload_to_drive(
         return {"error": "Failed to refresh expired credentials"}
 
     service = build("drive", "v3", credentials=creds)
-
-    # ✅ Get folder structure for this user
     structure = get_folder_structure(service, user_id)
+    
+    uploaded_files = []
+    errors = []
 
-    # Resolve folder ID
-    folder_id = None
-    if target.startswith("nhr."):
-        _, sub = target.split(".", 1)
-        folder_id = structure["nhr"].get(sub)
-    else:
-        folder_id = structure.get(target)
+    for folder in target_folders:
+        folder_path = os.path.join(local_dir, folder)
+        if not os.path.exists(folder_path):
+            continue
 
-    if not folder_id:
-        return {"error": f"Invalid target folder: {target}"}
+        # Determine Drive folder ID based on path
+        drive_folder_id = None
+        if folder.startswith("nhr/"):
+            nhr_type = folder.split("/")[1]
+            drive_folder_id = structure["nhr"].get(nhr_type)
+        else:
+            drive_folder_id = structure.get(folder)
 
-    uploaded = []
-    if os.path.exists(local_dir):
-        for file in os.listdir(local_dir):
-            file_path = os.path.join(local_dir, file)
+        if not drive_folder_id:
+            errors.append(f"Invalid target folder: {folder}")
+            continue
+
+        # Upload all files in this folder
+        for filename in os.listdir(folder_path):
+            file_path = os.path.join(folder_path, filename)
             if not os.path.isfile(file_path):
                 continue
 
-            new_name = rename_map.get(file, file) if rename_map else file
-
-            media = MediaFileUpload(file_path, mimetype="image/jpeg")
-            drive_file = service.files().create(
-                body={"name": new_name, "parents": [folder_id]},
-                media_body=media,
-                fields="id, name, webViewLink"
-            ).execute()
-
-            uploaded.append(drive_file)
-
-            # ✅ Delete file locally after successful upload
             try:
-                os.remove(file_path)
-                print(f"✅ Deleted local file: {file_path}")
+                media = MediaFileUpload(file_path, mimetype="image/jpeg")
+                drive_file = service.files().create(
+                    body={"name": filename, "parents": [drive_folder_id]},
+                    media_body=media,
+                    fields="id, name, webViewLink"
+                ).execute()
+
+                uploaded_files.append({
+                    "local_path": file_path,
+                    "drive_file": drive_file,
+                    "target_folder": folder
+                })
+
+                # Clean up local file after successful upload
+                try:
+                    os.remove(file_path)
+                    print(f"✅ Uploaded and deleted: {file_path}")
+                except Exception as e:
+                    print(f"⚠️ Warning: Could not delete {file_path} -> {e}")
+
             except Exception as e:
-                print(f"⚠️ Warning: Could not delete {file_path} -> {e}")
+                errors.append(f"Failed to upload {filename} to {folder}: {str(e)}")
 
-    return {
-        "message": f"Uploaded {len(uploaded)} files to {target} and cleaned up local copies",
-        "files": uploaded,
+    response = {
+        "message": f"Uploaded {len(uploaded_files)} files across {len(target_folders)} folders",
+        "uploaded_files": uploaded_files,
     }
+    
+    if errors:
+        response["errors"] = errors
 
-
-def upload_single_file_to_drive(user_id: str, file_bytes: bytes, filename: str, target: str = "output") -> str:
-    """Upload a single file (bytes) to Drive for a specific user. Returns file ID or raises exception."""
-    try:
-        creds = USER_TOKENS.get(user_id)
-        if not creds:
-            raise Exception(f"Drive not initialized for user {user_id}. Call /init-drive first.")
-
-        if not refresh_credentials_if_needed(creds):
-            raise Exception("Failed to refresh expired credentials")
-
-        service = build("drive", "v3", credentials=creds)
-
-        # Get folder structure for this user
-        structure = get_folder_structure(service, user_id)
-
-        # Resolve folder ID
-        folder_id = None
-        if target.startswith("nhr."):
-            _, sub = target.split(".", 1)
-            folder_id = structure["nhr"].get(sub)
-        else:
-            folder_id = structure.get(target)
-
-        if not folder_id:
-            raise Exception(f"Invalid target folder: {target}")
-
-        # Determine appropriate MIME type
-        mime_type = "application/octet-stream"
-        if filename.lower().endswith(('.jpg', '.jpeg')):
-            mime_type = "image/jpeg"
-        elif filename.lower().endswith('.png'):
-            mime_type = "image/png"
-
-        file_metadata = {"name": filename, "parents": [folder_id]}
-        media = MediaInMemoryUpload(file_bytes, mimetype=mime_type)
-
-        print(f"[Drive Upload] User {user_id}: Uploading {filename} to {target}")
-        print(f"[Drive Upload] Target folder_id: {folder_id}")
-        print(f"[Drive Upload] File size: {len(file_bytes)} bytes")
-
-        uploaded_file = (
-            service.files()
-            .create(body=file_metadata, media_body=media, fields="id,name,parents,webViewLink")
-            .execute()
-        )
-
-        print(f"[Drive Upload] Success for user {user_id}: {uploaded_file}")
-        return uploaded_file.get("id")
-
-    except Exception as e:
-        error_msg = f"Drive upload failed for user {user_id}, file {filename}: {str(e)}"
-        print(f"[Drive Upload] ERROR: {error_msg}")
-        print(f"[Drive Upload] Traceback: {traceback.format_exc()}")
-        raise Exception(error_msg)
+    return response
 
 
 # -------------------------------
-# Additional utility functions
+# Utility functions
 # -------------------------------
 def reset_folder_structure(user_id: str) -> Dict[str, str]:
-    """Reset folder structure for a specific user - delete pickle file and clear cache."""
+    """Reset folder structure for a specific user."""
     try:
         pickle_path = get_user_pickle_path(user_id)
         if os.path.exists(pickle_path):
@@ -483,14 +454,14 @@ def reset_folder_structure(user_id: str) -> Dict[str, str]:
         if user_id in USER_DRIVE_STRUCTURES:
             del USER_DRIVE_STRUCTURES[user_id]
         
-        return {"message": f"Folder structure reset for user {user_id}. Will be recreated on next operation."}
+        return {"message": f"Folder structure reset for user {user_id}"}
     
     except Exception as e:
         return {"error": f"Failed to reset folder structure for user {user_id}: {e}"}
 
 
 def get_folder_info(user_id: str) -> Dict[str, object]:
-    """Get information about current folder structure for a specific user."""
+    """Get information about current folder structure."""
     pickle_path = get_user_pickle_path(user_id)
     return {
         "structure": USER_DRIVE_STRUCTURES.get(user_id, {}),
@@ -501,7 +472,7 @@ def get_folder_info(user_id: str) -> Dict[str, object]:
 
 
 def debug_drive_structure():
-    """Return debug info about drive structure"""
+    """Return debug info about drive structure."""
     return {
         "total_users": len(USER_TOKENS),
         "user_tokens": list(USER_TOKENS.keys()),
@@ -509,28 +480,3 @@ def debug_drive_structure():
         "user_structures_cached": list(USER_DRIVE_STRUCTURES.keys()),
         "pickle_files": [f for f in os.listdir(PICKLE_BASE_DIR) if f.startswith("user_") and f.endswith(".pkl")]
     }
-
-
-# -------------------------------
-# Session management helpers
-# -------------------------------
-def get_current_user_id(request_headers: dict = None) -> Optional[str]:
-    """Extract user ID from request headers or return None."""
-    # In a real application, you'd implement proper session management
-    # For now, we'll rely on the frontend to pass user_id
-    if request_headers:
-        return request_headers.get("X-User-ID")
-    return None
-
-
-def cleanup_expired_users():
-    """Clean up expired user sessions (call this periodically)."""
-    expired_users = []
-    for user_id, creds in USER_TOKENS.items():
-        if creds.expired and not creds.refresh_token:
-            expired_users.append(user_id)
-    
-    for user_id in expired_users:
-        print(f"Cleaning up expired user: {user_id}")
-        USER_TOKENS.pop(user_id, None)
-        USER_DRIVE_STRUCTURES.pop(user_id, None)
