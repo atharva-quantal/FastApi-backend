@@ -403,6 +403,20 @@ def upload_to_shopify_batch(selections: List[dict]):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+
+# -----------------------------------------
+# Alias endpoint for backward compatibility
+# -----------------------------------------
+@app.post("/upload-to-drive")
+def upload_to_drive_alias(
+    selections: List[dict],
+    user_id: Optional[str] = Query(None)
+):
+    """
+    Alias for /upload-drive-selected so existing frontend calls keep working.
+    """
+    return upload_drive_selected_endpoint(selections, user_id)
+
 # -------------------------------
 # Debug routes
 # -------------------------------
