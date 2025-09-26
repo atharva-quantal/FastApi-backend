@@ -12,6 +12,10 @@ from googleapiclient.http import MediaFileUpload
 from fastapi.responses import RedirectResponse
 from google.auth.exceptions import RefreshError
 import traceback
+import logging
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger(__name__)
 
 # -------------------------------
 # Multi-user storage (replace with proper DB in production)
@@ -360,42 +364,46 @@ def is_drive_ready(user_id: str = None) -> Dict[str, object]:
     }
 
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 def upload_to_drive(
     user_id: str,
     local_dir: str = "processed",
     target_folders: List[str] = None,
 ) -> Dict[str, List[Dict[str, str]]]:
     """Upload all files from specified folders to corresponding Drive locations."""
-    print(f"🚀 Starting upload_to_drive for user {user_id}...")
-    print(f"📂 Local dir: {local_dir}, Target folders: {target_folders}")
+    logger.info("🚀 Starting upload_to_drive for user %s", user_id)
+    logger.info("📂 Local dir: %s, Target folders: %s", local_dir, target_folders)
 
     if not target_folders:
         target_folders = ["output", "upload"]  # Default folders to check
-        print(f"⚠️ No target_folders provided, defaulting to: {target_folders}")
+        logger.warning("⚠️ No target_folders provided, defaulting to: %s", target_folders)
         
     creds = USER_TOKENS.get(user_id)
     if not creds:
-        print(f"❌ No credentials found for {user_id}")
+        logger.error("❌ No credentials found for user %s", user_id)
         return {"error": f"Drive not initialized for user {user_id}. Call /init-drive first."}
 
     if not refresh_credentials_if_needed(creds):
-        print(f"❌ Could not refresh credentials for {user_id}")
+        logger.error("❌ Could not refresh credentials for %s", user_id)
         return {"error": "Failed to refresh expired credentials"}
 
     service = build("drive", "v3", credentials=creds)
     structure = get_folder_structure(service, user_id)
 
-    print(f"📑 Resolved Drive folder structure for {user_id}: {json.dumps(structure, indent=2)}")
+    logger.info("📑 Resolved Drive folder structure for %s: %s", user_id, json.dumps(structure, indent=2))
 
     uploaded_files = []
     errors = []
 
     for folder in target_folders:
         folder_path = os.path.join(local_dir, folder)
-        print(f"🔎 Checking local folder: {folder_path}")
+        logger.info("🔎 Checking local folder: %s", folder_path)
 
         if not os.path.exists(folder_path):
-            print(f"⚠️ Local folder does not exist: {folder_path}")
+            logger.warning("⚠️ Local folder does not exist: %s", folder_path)
             continue
 
         # Determine Drive folder ID based on path
@@ -403,14 +411,14 @@ def upload_to_drive(
         if folder.startswith("nhr/"):
             nhr_type = folder.split("/")[1]
             drive_folder_id = structure["nhr"].get(nhr_type)
-            print(f"➡️ Target NHR subfolder '{nhr_type}' → {drive_folder_id}")
+            logger.info("➡️ Target NHR subfolder '%s' → %s", nhr_type, drive_folder_id)
         else:
             drive_folder_id = structure.get(folder)
-            print(f"➡️ Target normal folder '{folder}' → {drive_folder_id}")
+            logger.info("➡️ Target normal folder '%s' → %s", folder, drive_folder_id)
 
         if not drive_folder_id:
             error_msg = f"❌ Invalid target folder mapping: {folder}"
-            print(error_msg)
+            logger.error(error_msg)
             errors.append(error_msg)
             continue
 
@@ -420,7 +428,7 @@ def upload_to_drive(
             if not os.path.isfile(file_path):
                 continue
 
-            print(f"⬆️ Preparing to upload {file_path} → Drive folder {drive_folder_id}")
+            logger.info("⬆️ Preparing to upload %s → Drive folder %s", file_path, drive_folder_id)
 
             try:
                 media = MediaFileUpload(file_path, mimetype="image/jpeg")
@@ -436,18 +444,18 @@ def upload_to_drive(
                     "target_folder": folder
                 })
 
-                print(f"✅ Uploaded {filename} to folder {folder} (Drive ID: {drive_file['id']})")
+                logger.info("✅ Uploaded %s to folder %s (Drive ID: %s)", filename, folder, drive_file["id"])
 
                 # Clean up local file after successful upload
                 try:
                     os.remove(file_path)
-                    print(f"🗑️ Deleted local file after upload: {file_path}")
+                    logger.info("🗑️ Deleted local file after upload: %s", file_path)
                 except Exception as e:
-                    print(f"⚠️ Warning: Could not delete {file_path} -> {e}")
+                    logger.warning("⚠️ Warning: Could not delete %s -> %s", file_path, e)
 
             except Exception as e:
                 error_msg = f"❌ Failed to upload {filename} to {folder}: {str(e)}"
-                print(error_msg)
+                logger.error(error_msg)
                 errors.append(error_msg)
 
     response = {
@@ -456,10 +464,11 @@ def upload_to_drive(
     }
     
     if errors:
-        print(f"⚠️ Errors encountered: {errors}")
+        logger.warning("⚠️ Errors encountered: %s", errors)
         response["errors"] = errors
 
     return response
+
 
 
 # -------------------------------
