@@ -362,13 +362,15 @@ def is_drive_ready(user_id: str = None) -> Dict[str, object]:
 
 def upload_to_drive(
     user_id: str,
-    local_dir: str = "processed",
-    target_folders: List[str] = None,
-) -> Dict[str, List[Dict[str, str]]]:
-    """Upload all files from specified folders to corresponding Drive locations."""
-    if not target_folders:
-        target_folders = ["output", "upload"]  # Default folders to check
-        
+    file_path: str,
+    new_name: str,
+    target: str
+) -> Dict[str, object]:
+    """
+    Upload a single file directly to the correct Drive folder.
+    target can be: "input", "output", "upload", "nhr.search_failed", etc.
+    """
+
     creds = USER_TOKENS.get(user_id)
     if not creds:
         return {"error": f"Drive not initialized for user {user_id}. Call /init-drive first."}
@@ -377,67 +379,36 @@ def upload_to_drive(
         return {"error": "Failed to refresh expired credentials"}
 
     service = build("drive", "v3", credentials=creds)
+
+    # ✅ Get folder structure for this user
     structure = get_folder_structure(service, user_id)
-    
-    uploaded_files = []
-    errors = []
 
-    for folder in target_folders:
-        folder_path = os.path.join(local_dir, folder)
-        if not os.path.exists(folder_path):
-            continue
+    # Resolve folder ID
+    folder_id = None
+    if target.startswith("nhr."):
+        _, sub = target.split(".", 1)
+        folder_id = structure["nhr"].get(sub)
+    else:
+        folder_id = structure.get(target)
 
-        # Determine Drive folder ID based on path
-        drive_folder_id = None
-        if folder.startswith("nhr/"):
-            nhr_type = folder.split("/")[1]
-            drive_folder_id = structure["nhr"].get(nhr_type)
-        else:
-            drive_folder_id = structure.get(folder)
+    if not folder_id:
+        return {"error": f"Invalid target folder: {target}"}
 
-        if not drive_folder_id:
-            errors.append(f"Invalid target folder: {folder}")
-            continue
+    try:
+        media = MediaFileUpload(file_path, mimetype="image/jpeg")
+        drive_file = service.files().create(
+            body={"name": new_name, "parents": [folder_id]},
+            media_body=media,
+            fields="id, name, webViewLink"
+        ).execute()
 
-        # Upload all files in this folder
-        for filename in os.listdir(folder_path):
-            file_path = os.path.join(folder_path, filename)
-            if not os.path.isfile(file_path):
-                continue
+        print(f"✅ Uploaded {new_name} → {target} (user {user_id})")
+        return {"success": True, "target": target, "drive_file": drive_file}
 
-            try:
-                media = MediaFileUpload(file_path, mimetype="image/jpeg")
-                drive_file = service.files().create(
-                    body={"name": filename, "parents": [drive_folder_id]},
-                    media_body=media,
-                    fields="id, name, webViewLink"
-                ).execute()
+    except Exception as e:
+        return {"error": f"Failed to upload {file_path} → {target}: {str(e)}"}
 
-                uploaded_files.append({
-                    "local_path": file_path,
-                    "drive_file": drive_file,
-                    "target_folder": folder
-                })
 
-                # Clean up local file after successful upload
-                try:
-                    os.remove(file_path)
-                    print(f"✅ Uploaded and deleted: {file_path}")
-                except Exception as e:
-                    print(f"⚠️ Warning: Could not delete {file_path} -> {e}")
-
-            except Exception as e:
-                errors.append(f"Failed to upload {filename} to {folder}: {str(e)}")
-
-    response = {
-        "message": f"Uploaded {len(uploaded_files)} files across {len(target_folders)} folders",
-        "uploaded_files": uploaded_files,
-    }
-    
-    if errors:
-        response["errors"] = errors
-
-    return response
 
 
 # -------------------------------
