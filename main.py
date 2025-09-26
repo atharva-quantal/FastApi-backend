@@ -1,12 +1,12 @@
-from fastapi import FastAPI, UploadFile, File, Query
+from fastapi import FastAPI, UploadFile, File, Query, Header
 from fastapi.responses import JSONResponse
-from typing import List
+from typing import List, Optional
 import os
 import shutil
 import time
 import json
 from fastapi import FastAPI, APIRouter
-from drive_utils import USER_TOKENS, DRIVE_STRUCTURE
+from drive_utils import USER_TOKENS, USER_DRIVE_STRUCTURES
 
 from ocr import process_image
 from graphql import get_shopify_data
@@ -15,7 +15,7 @@ from shopify_upload import upload_image_to_shopify
 from fastapi.middleware.cors import CORSMiddleware
 from drive_utils import (
     init_drive, oauth_callback, upload_to_drive, upload_single_file_to_drive, 
-    is_drive_ready, debug_drive_structure
+    is_drive_ready, debug_drive_structure, get_user_id_from_credentials
 )
 
 app = FastAPI(title="Wine OCR + Matching API")
@@ -35,6 +35,14 @@ UPLOAD_DIR = "uploads"
 PROCESSED_DIR = "processed"
 CACHE_FILE = "ocr_results.json"
 COMPARE_FILE = "compare_results.json"
+
+
+# -------------------------------
+# Helper function to get user_id from headers
+# -------------------------------
+def get_user_id_from_headers(x_user_id: Optional[str] = Header(None)) -> Optional[str]:
+    """Extract user ID from headers."""
+    return x_user_id
 
 
 # -------------------------------
@@ -61,10 +69,16 @@ def drive_callback_endpoint(code: str = Query(...), state: str = Query(...)):
 
 
 @app.get("/drive-status")
-def drive_status_endpoint():
-    """Check if Drive is linked and ready."""
+def drive_status_endpoint(user_id: Optional[str] = Query(None)):
+    """Check if Drive is linked and ready for a specific user."""
     try:
-        status = is_drive_ready()
+        if not user_id:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "user_id parameter is required"}
+            )
+        
+        status = is_drive_ready(user_id)
         debug_info = debug_drive_structure()
         return {**status, "debug": debug_info}
     except Exception as e:
@@ -139,18 +153,24 @@ def get_compare_results():
 
 
 @app.post("/upload-drive")
-def upload_drive_endpoint():
+def upload_drive_endpoint(user_id: Optional[str] = Query(None)):
     """
-    Upload processed & renamed images (after compare step) to Google Drive.
+    Upload processed & renamed images (after compare step) to Google Drive for a specific user.
     Uses the validated_gid or first candidate by default.
     """
     try:
-        # Check if Drive is ready
-        drive_status = is_drive_ready()
+        if not user_id:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "user_id parameter is required"}
+            )
+        
+        # Check if Drive is ready for this user
+        drive_status = is_drive_ready(user_id)
         if not drive_status.get("linked", False):
             return JSONResponse(
                 status_code=400,
-                content={"error": "Google Drive not connected or credentials expired. Please run /init-drive first."}
+                content={"error": f"Google Drive not connected for user {user_id} or credentials expired. Please run /init-drive first."}
             )
         
         if not os.path.exists(COMPARE_FILE):
@@ -233,8 +253,8 @@ def upload_drive_endpoint():
                 with open(new_path, "rb") as f:
                     file_bytes = f.read()
 
-                print(f"Uploading {new_filename} to Drive...")
-                file_id = upload_single_file_to_drive(file_bytes, new_filename, target="output")
+                print(f"Uploading {new_filename} to Drive for user {user_id}...")
+                file_id = upload_single_file_to_drive(user_id, file_bytes, new_filename, target="output")
                 
                 files_to_upload.append({
                     "local": new_filename, 
@@ -252,8 +272,9 @@ def upload_drive_endpoint():
                 upload_errors.append(error_msg)
 
         response_data = {
-            "message": f"Upload process completed. {len(files_to_upload)} files uploaded successfully.",
-            "files": files_to_upload
+            "message": f"Upload process completed for user {user_id}. {len(files_to_upload)} files uploaded successfully.",
+            "files": files_to_upload,
+            "user_id": user_id
         }
         
         if upload_errors:
@@ -261,7 +282,7 @@ def upload_drive_endpoint():
             response_data["error_count"] = len(upload_errors)
 
         if not files_to_upload and not upload_errors:
-            return {"message": "No images to upload (no candidates found)"}
+            return {"message": "No images to upload (no candidates found)", "user_id": user_id}
         
         # Return success even if some files failed (partial success)
         return response_data
@@ -274,18 +295,24 @@ def upload_drive_endpoint():
 
 
 @app.post("/upload-drive-selected")
-def upload_drive_selected_endpoint(selections: List[dict]):
+def upload_drive_selected_endpoint(selections: List[dict], user_id: Optional[str] = Query(None)):
     """
-    Upload images with user-selected names and target folders to Google Drive.
+    Upload images with user-selected names and target folders to Google Drive for a specific user.
     Expected format: [{"image": "file.jpg", "selected_name": "Product Name", "target": "output", "nhr_reason": "search_failed"}]
     """
     try:
-        # Check if Drive is ready
-        drive_status = is_drive_ready()
+        if not user_id:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "user_id parameter is required"}
+            )
+        
+        # Check if Drive is ready for this user
+        drive_status = is_drive_ready(user_id)
         if not drive_status.get("linked", False):
             return JSONResponse(
                 status_code=400,
-                content={"error": "Google Drive not connected or credentials expired. Please run /init-drive first."}
+                content={"error": f"Google Drive not connected for user {user_id} or credentials expired. Please run /init-drive first."}
             )
         
         if not os.path.exists(COMPARE_FILE):
@@ -344,8 +371,8 @@ def upload_drive_selected_endpoint(selections: List[dict]):
                 with open(new_path, "rb") as f:
                     file_bytes = f.read()
 
-                print(f"Uploading user-selected {new_filename} to Drive folder: {target_folder}")
-                file_id = upload_single_file_to_drive(file_bytes, new_filename, target=target_folder)
+                print(f"Uploading user-selected {new_filename} to Drive folder: {target_folder} for user {user_id}")
+                file_id = upload_single_file_to_drive(user_id, file_bytes, new_filename, target=target_folder)
                 
                 files_to_upload.append({
                     "local": new_filename, 
@@ -363,8 +390,9 @@ def upload_drive_selected_endpoint(selections: List[dict]):
                 upload_errors.append(error_msg)
 
         response_data = {
-            "message": f"Upload process completed. {len(files_to_upload)} files uploaded successfully.",
-            "files": files_to_upload
+            "message": f"Upload process completed for user {user_id}. {len(files_to_upload)} files uploaded successfully.",
+            "files": files_to_upload,
+            "user_id": user_id
         }
         
         if upload_errors:
