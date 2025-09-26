@@ -368,106 +368,87 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def upload_to_drive(
-    user_id: str,
-    local_dir: str = "processed",
-    target_folders: List[str] = None,
-) -> Dict[str, List[Dict[str, str]]]:
-    """Upload all files from specified folders to corresponding Drive locations."""
-    logger.info("🚀 Starting upload_to_drive for user %s", user_id)
-    logger.info("📂 Local dir: %s, Target folders: %s", local_dir, target_folders)
+@app.post("/upload-to-drive")
+def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
+    try:
+        user_id = payload.user_id
+        selections = payload.selections
 
-    if not target_folders:
-        target_folders = ["output", "upload"]  # Default folders to check
-        logger.warning("⚠️ No target_folders provided, defaulting to: %s", target_folders)
-        
-    creds = USER_TOKENS.get(user_id)
-    if not creds:
-        logger.error("❌ No credentials found for user %s", user_id)
-        return {"error": f"Drive not initialized for user {user_id}. Call /init-drive first."}
+        # Check Drive connection
+        drive_status = is_drive_ready(user_id)
+        if not drive_status.get("linked", False):
+            return JSONResponse(
+                status_code=400,
+                content={"error": f"Drive not connected for user {user_id}. Please connect Drive first."}
+            )
 
-    if not refresh_credentials_if_needed(creds):
-        logger.error("❌ Could not refresh credentials for %s", user_id)
-        return {"error": "Failed to refresh expired credentials"}
+        files_by_folder = {}
 
-    service = build("drive", "v3", credentials=creds)
-    structure = get_folder_structure(service, user_id)
+        for selection in selections:
+            image_name = selection.image
+            selected_name = selection.selected_name
+            target = selection.target or "output"
+            nhr_reason = selection.nhr_reason
 
-    logger.info("📑 Resolved Drive folder structure for %s: %s", user_id, json.dumps(structure, indent=2))
-
-    uploaded_files = []
-    errors = []
-
-    for folder in target_folders:
-        folder_path = os.path.join(local_dir, folder)
-        logger.info("🔎 Checking local folder: %s", folder_path)
-
-        if not os.path.exists(folder_path):
-            logger.warning("⚠️ Local folder does not exist: %s", folder_path)
-            continue
-
-        # Determine Drive folder ID based on path
-        drive_folder_id = None
-        if folder.startswith("nhr/"):
-            nhr_type = folder.split("/")[1]
-            drive_folder_id = structure["nhr"].get(nhr_type)
-            logger.info("➡️ Target NHR subfolder '%s' → %s", nhr_type, drive_folder_id)
-        else:
-            drive_folder_id = structure.get(folder)
-            logger.info("➡️ Target normal folder '%s' → %s", folder, drive_folder_id)
-
-        if not drive_folder_id:
-            error_msg = f"❌ Invalid target folder mapping: {folder}"
-            logger.error(error_msg)
-            errors.append(error_msg)
-            continue
-
-        # Upload all files in this folder
-        for filename in os.listdir(folder_path):
-            file_path = os.path.join(folder_path, filename)
-            if not os.path.isfile(file_path):
+            if not all([image_name, selected_name]):
                 continue
 
-            logger.info("⬆️ Preparing to upload %s → Drive folder %s", file_path, drive_folder_id)
+            # Sanitize selected name
+            safe_name = selected_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
+            renamed_file = f"{safe_name}.jpg"
 
-            try:
-                media = MediaFileUpload(file_path, mimetype="image/jpeg")
-                drive_file = service.files().create(
-                    body={"name": filename, "parents": [drive_folder_id]},
-                    media_body=media,
-                    fields="id, name, webViewLink"
-                ).execute()
+            # Build target folders
+            target_folders = []
+            if target == "nhr" and nhr_reason:
+                target_folders.append(f"nhr/{nhr_reason}")   # upload into reason folder
+            else:
+                target_folders.extend(["output", "upload"])  # normal flow
 
-                uploaded_files.append({
-                    "local_path": file_path,
-                    "drive_file": drive_file,
-                    "target_folder": folder
+            target_folders.append("input")  # always keep original copy
+
+            source_path = os.path.join(PROCESSED_DIR, image_name)
+
+            moved_paths = []
+            for folder in target_folders:
+                if folder == "input":
+                    final_name = image_name  # keep OCR/original name
+                else:
+                    final_name = renamed_file  # rename to user-selected
+
+                moved = move_file_to_folders(
+                    source_path,
+                    final_name,
+                    [folder],
+                    PROCESSED_DIR
+                )[0]
+
+                moved_paths.append(moved)
+                files_by_folder.setdefault(folder, []).append({
+                    "original": image_name,
+                    "final_name": final_name,
+                    "path": moved
                 })
 
-                logger.info("✅ Uploaded %s to folder %s (Drive ID: %s)", filename, folder, drive_file["id"])
+        # Call drive_utils uploader
+        upload_result = upload_to_drive(
+            user_id=user_id,
+            local_dir=PROCESSED_DIR,
+            target_folders=list(files_by_folder.keys())
+        )
 
-                # Clean up local file after successful upload
-                try:
-                    os.remove(file_path)
-                    logger.info("🗑️ Deleted local file after upload: %s", file_path)
-                except Exception as e:
-                    logger.warning("⚠️ Warning: Could not delete %s -> %s", file_path, e)
+        return {
+            "message": f"Upload complete. Processed {len(selections)} selections.",
+            "upload_result": upload_result,
+            "user_id": user_id
+        }
 
-            except Exception as e:
-                error_msg = f"❌ Failed to upload {filename} to {folder}: {str(e)}"
-                logger.error(error_msg)
-                errors.append(error_msg)
+    except Exception as e:
+        import traceback
+        print(f"🚨 Upload error: {e}")
+        print(traceback.format_exc())
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
-    response = {
-        "message": f"Uploaded {len(uploaded_files)} files across {len(target_folders)} folders",
-        "uploaded_files": uploaded_files,
-    }
-    
-    if errors:
-        logger.warning("⚠️ Errors encountered: %s", errors)
-        response["errors"] = errors
 
-    return response
 
 
 

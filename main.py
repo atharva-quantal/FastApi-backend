@@ -179,29 +179,40 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
             if not all([image_name, selected_name]):
                 continue
 
+            # Sanitize selected name
             safe_name = selected_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
-            final_name = f"{safe_name}.jpg"
+            renamed_file = f"{safe_name}.jpg"
 
+            # Determine target folders
             if target == "nhr" and nhr_reason:
                 target_folders = [f"nhr/{nhr_reason}"]
             else:
                 target_folders = ["output", "upload"]
 
+            # Always keep original in input (without renaming)
             target_folders.append("input")
 
             source_path = os.path.join(PROCESSED_DIR, image_name)
-            moved_paths = move_file_to_folders(
-                source_path,
-                final_name,
-                target_folders,
-                PROCESSED_DIR
-            )
+            moved_paths = []
 
-            for i, folder in enumerate(target_folders):
+            for folder in target_folders:
+                if folder == "input":
+                    final_name = image_name  # keep original name
+                else:
+                    final_name = renamed_file  # use selected_name
+
+                moved = move_file_to_folders(
+                    source_path,
+                    final_name,
+                    [folder],
+                    PROCESSED_DIR
+                )[0]
+
+                moved_paths.append(moved)
                 files_by_folder.setdefault(folder, []).append({
                     "original": image_name,
                     "final_name": final_name,
-                    "path": moved_paths[i]
+                    "path": moved
                 })
 
         # Call drive_utils uploader
@@ -222,6 +233,7 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
         print(f"🚨 Upload error: {e}")
         print(traceback.format_exc())
         return JSONResponse(status_code=500, content={"error": str(e)})
+
 
 
 
