@@ -39,7 +39,7 @@ def search_with_bm25(query, bm25, docs, gids, top_n=5):
 # ---------------------------
 # Gemini Validation
 # ----------------------------
-def validate_with_gemini(filename, bm25_candidates, model_name="gemini-1.5-flash"):
+def validate_with_gemini(filename, bm25_candidates, model_name="gemini-2.0-flash"):
     """
     Validates BM25 candidates using Gemini LLM.
     Returns top-3 candidates with 'gid', 'text', 'score', 'reason'.
