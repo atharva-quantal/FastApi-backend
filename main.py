@@ -1,11 +1,12 @@
-from fastapi import FastAPI, UploadFile, File, Query, Header
+from fastapi import FastAPI, UploadFile, File, Query, Header, Body
 from fastapi.responses import JSONResponse
 from typing import List, Optional
 import os
 import shutil
 import time
 import json
-from fastapi import FastAPI, APIRouter
+from fastapi import APIRouter
+from pydantic import BaseModel
 from drive_utils import (
     USER_TOKENS, USER_DRIVE_STRUCTURES, init_drive, oauth_callback,
     upload_to_drive, is_drive_ready, debug_drive_structure,
@@ -36,6 +37,22 @@ PROCESSED_DIR = "processed"
 CACHE_FILE = "ocr_results.json"
 COMPARE_FILE = "compare_results.json"
 
+
+# -------------------------------
+# Request models
+# -------------------------------
+class DriveSelection(BaseModel):
+    image: str
+    selected_name: str
+    target: Optional[str] = "output"
+    nhr_reason: Optional[str] = None
+
+
+class DriveUploadRequest(BaseModel):
+    user_id: str
+    selections: List[DriveSelection]
+
+
 # -------------------------------
 # Utility functions
 # -------------------------------
@@ -51,7 +68,10 @@ def clear_folder(folder: str):
     else:
         os.makedirs(folder, exist_ok=True)
 
-# Ensure all required folders exist
+
+# -------------------------------
+# Startup
+# -------------------------------
 @app.on_event("startup")
 def startup_event():
     """Ensure clean state and folder structure when backend starts."""
@@ -67,14 +87,6 @@ def startup_event():
             os.remove(cache_file)
     
     print("✅ Initialized clean folder structure and removed cache files")
-
-
-# -------------------------------
-# Helper function to get user_id from headers
-# -------------------------------
-def get_user_id_from_headers(x_user_id: Optional[str] = Header(None)) -> Optional[str]:
-    """Extract user ID from headers."""
-    return x_user_id
 
 
 # -------------------------------
@@ -118,43 +130,15 @@ def drive_status_endpoint(user_id: Optional[str] = Query(None)):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
-from pydantic import BaseModel
-
-# -------------------------------
-# Request models
-# -------------------------------
-class DriveSelection(BaseModel):
-    image: str
-    selected_name: str
-    target: Optional[str] = "output"
-    nhr_reason: Optional[str] = None
-
-class DriveUploadRequest(BaseModel):
-    user_id: str
-    selections: List[DriveSelection]
-
-
-# -------------------------------
-# Drive Endpoints
-# -------------------------------
-from fastapi import Body
-
 @app.post("/upload-to-drive")
 def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
     """
-    Upload images with user-selected names and target folders to Google Drive.
-    Expected JSON:
-    {
-        "user_id": "123abc",
-        "selections": [
-            {
-                "image": "file.jpg",
-                "selected_name": "Product Name",
-                "target": "output" | "nhr",
-                "nhr_reason": "search_failed" | "ocr_failed" | "manual_rejection" | "others"
-            }
-        ]
-    }
+    Upload images with user-selected names to Google Drive.
+    
+    File organization logic:
+    - input/ → Original OCR filename (unchanged)
+    - output/ & upload/ → User-selected renamed file
+    - nhr/<reason>/ → User-selected renamed file
     """
     try:
         user_id = payload.user_id
@@ -168,51 +152,96 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
                 content={"error": f"Drive not connected for user {user_id}. Please connect Drive first."}
             )
 
-        files_by_folder = {}
+        files_organized = []
+        target_folders_set = set()
 
         for selection in selections:
-            image_name = selection.image
-            selected_name = selection.selected_name
+            image_name = selection.image  # Original OCR filename
+            selected_name = selection.selected_name  # User's choice
             target = selection.target or "output"
             nhr_reason = selection.nhr_reason
 
             if not all([image_name, selected_name]):
+                print(f"Skipping incomplete selection: {selection}")
                 continue
 
+            # Sanitize user-selected name for filename
             safe_name = selected_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
-            final_name = f"{safe_name}.jpg"
-
-            if target == "nhr" and nhr_reason:
-                target_folders = [f"nhr/{nhr_reason}"]
-            else:
-                target_folders = ["output", "upload"]
-
-            target_folders.append("input")
+            renamed_file = f"{safe_name}.jpg"
 
             source_path = os.path.join(PROCESSED_DIR, image_name)
-            moved_paths = move_file_to_folders(
+            
+            if not os.path.exists(source_path):
+                print(f"Source file not found: {source_path}")
+                continue
+
+            # Step 1: Copy original file to input/ with OCR name
+            input_path = move_file_to_folders(
                 source_path,
-                final_name,
-                target_folders,
+                image_name,  # Keep OCR name
+                ["input"],
                 PROCESSED_DIR
             )
-
-            for i, folder in enumerate(target_folders):
-                files_by_folder.setdefault(folder, []).append({
+            if input_path:
+                target_folders_set.add("input")
+                files_organized.append({
                     "original": image_name,
-                    "final_name": final_name,
-                    "path": moved_paths[i]
+                    "target": "input",
+                    "filename": image_name
                 })
 
-        # Call drive_utils uploader
+            # Step 2: Copy renamed file to appropriate folders
+            if target == "nhr" and nhr_reason:
+                # NHR case: only to nhr/<reason>/
+                nhr_folder = f"nhr/{nhr_reason}"
+                nhr_path = move_file_to_folders(
+                    source_path,
+                    renamed_file,  # User-selected name
+                    [nhr_folder],
+                    PROCESSED_DIR
+                )
+                if nhr_path:
+                    target_folders_set.add(nhr_folder)
+                    files_organized.append({
+                        "original": image_name,
+                        "target": nhr_folder,
+                        "filename": renamed_file,
+                        "renamed_to": selected_name
+                    })
+            else:
+                # Normal case: to both output/ and upload/
+                for folder in ["output", "upload"]:
+                    renamed_path = move_file_to_folders(
+                        source_path,
+                        renamed_file,  # User-selected name
+                        [folder],
+                        PROCESSED_DIR
+                    )
+                    if renamed_path:
+                        target_folders_set.add(folder)
+                        files_organized.append({
+                            "original": image_name,
+                            "target": folder,
+                            "filename": renamed_file,
+                            "renamed_to": selected_name
+                        })
+
+        # Upload all organized files to Drive
+        if not target_folders_set:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "No files were organized for upload"}
+            )
+
         upload_result = upload_to_drive(
             user_id=user_id,
             local_dir=PROCESSED_DIR,
-            target_folders=list(files_by_folder.keys())
+            target_folders=list(target_folders_set)
         )
 
         return {
             "message": f"Upload complete. Processed {len(selections)} selections.",
+            "files_organized": files_organized,
             "upload_result": upload_result,
             "user_id": user_id
         }
@@ -223,6 +252,67 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
         print(traceback.format_exc())
         return JSONResponse(status_code=500, content={"error": str(e)})
 
+
+@app.get("/get-compare-results")
+def get_compare_results():
+    """Get compare results formatted for frontend display"""
+    try:
+        if not os.path.exists(COMPARE_FILE):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "No compare results found. Run /compare-batch first."}
+            )
+        
+        with open(COMPARE_FILE, "r", encoding="utf-8") as f:
+            compare_results = json.load(f)
+        
+        # Format results for frontend
+        frontend_results = []
+        for result in compare_results:
+            image_name = result.get("image")
+            matches_data = result.get("matches", {})
+            
+            # Handle both old and new formats
+            if isinstance(matches_data, list):
+                candidates = matches_data
+                original_text = ""
+                validated_gid = ""
+                need_human_review = False
+            else:
+                candidates = matches_data.get("candidates", [])
+                original_text = matches_data.get("orig", "")
+                validated_gid = matches_data.get("validated_gid", "")
+                need_human_review = matches_data.get("need_human_review", False)
+            
+            if not candidates:
+                continue
+            
+            options = []
+            for candidate in candidates:
+                name = candidate.get("text") or candidate.get("name", "")
+                options.append({
+                    "name": name,
+                    "score": candidate.get("score", 0),
+                    "reason": candidate.get("reason", ""),
+                    "gid": candidate.get("gid", "")
+                })
+            
+            frontend_results.append({
+                "image": image_name,
+                "original_text": original_text,
+                "options": options,
+                "validated_gid": validated_gid,
+                "need_human_review": need_human_review
+            })
+        
+        return {
+            "results": frontend_results,
+            "total_images": len(frontend_results)
+        }
+        
+    except Exception as e:
+        print(f"Get compare results error: {str(e)}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 # -------------------------------
@@ -273,7 +363,7 @@ def process_ocr():
             with open(CACHE_FILE, "w", encoding="utf-8") as f:
                 json.dump(results, f, indent=2, ensure_ascii=False)
 
-            time.sleep(5)  # rate limiting
+            time.sleep(5)
 
         return {"message": f"OCR completed for {len(results)} images.", "results": results}
 
@@ -338,12 +428,12 @@ def upload_to_shopify_batch(selections: List[dict]):
                 upload_errors.append(f"Invalid selection (missing required fields): {selection}")
                 continue
             
-            # Clean name for filename
-            final_name = selected_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
+            safe_name = selected_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
             
-            # Look for both original and renamed files
+            # Look in output/ and processed/ folders
             possible_paths = [
-                os.path.join(PROCESSED_DIR, f"{final_name}.jpg"),
+                os.path.join(PROCESSED_DIR, "output", f"{safe_name}.jpg"),
+                os.path.join(PROCESSED_DIR, "upload", f"{safe_name}.jpg"),
                 os.path.join(PROCESSED_DIR, image_name)
             ]
             
@@ -354,7 +444,7 @@ def upload_to_shopify_batch(selections: List[dict]):
                     break
             
             if not image_path:
-                upload_errors.append(f"File not found for {image_name} (searched: {possible_paths})")
+                upload_errors.append(f"File not found for {image_name}")
                 continue
 
             try:
@@ -392,10 +482,29 @@ def upload_to_shopify_batch(selections: List[dict]):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+@app.post("/refresh-shopify-cache")
+def refresh_shopify_cache():
+    """Force refresh Shopify product data and overwrite cache file."""
+    try:
+        products = get_shopify_data(force_refresh=True)
+        if not products:
+            return JSONResponse(status_code=500, content={"error": "Failed to refresh Shopify data"})
+        
+        return {
+            "message": f"Refreshed cache with {len(products)} products.",
+            "cache_file": "cache/shopify_products.json"
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
-# -----------------------------------------
-# Alias endpoint for backward compatibility
-# -----------------------------------------
+
+# -------------------------------
+# Root endpoint
+# -------------------------------
+@app.get("/")
+def root():
+    return {"message": "Wine OCR + Matching API is running"}
+
 
 # -------------------------------
 # Debug routes
@@ -407,6 +516,7 @@ def debug_drive_structure_endpoint():
     """Debug Drive folder structure in production."""
     return debug_drive_structure()
 
+
 @router.get("/debug-compare-results")
 def debug_compare_results():
     """Debug: Show the structure of compare results"""
@@ -417,7 +527,6 @@ def debug_compare_results():
         with open(COMPARE_FILE, "r", encoding="utf-8") as f:
             compare_results = json.load(f)
         
-        # Return just the first few results to see the structure
         sample_results = compare_results[:2] if len(compare_results) > 2 else compare_results
         
         return {
@@ -428,5 +537,5 @@ def debug_compare_results():
     except Exception as e:
         return {"error": str(e)}
 
-# Mount router
+
 app.include_router(router)
