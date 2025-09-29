@@ -134,11 +134,12 @@ def drive_status_endpoint(user_id: Optional[str] = Query(None)):
 def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
     """
     Upload images with user-selected names to Google Drive.
+    This should be called AFTER OCR and comparison are complete.
     
     File organization logic:
-    - input/ → Original OCR filename (for all images)
+    - input/ → Original user-uploaded filename (from compare results)
     - output/ & upload/ → User-selected renamed file (for normal flow)
-    - nhr/<reason>/ → Original OCR filename (for NHR flow)
+    - nhr/<reason>/ → Original user-uploaded filename (for NHR flow)
     """
     try:
         user_id = payload.user_id
@@ -152,86 +153,117 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
                 content={"error": f"Drive not connected for user {user_id}. Please connect Drive first."}
             )
 
+        # Verify compare results exist
+        if not os.path.exists(COMPARE_FILE):
+            return JSONResponse(
+                status_code=400,
+                content={"error": "No comparison results found. Please run OCR and comparison first."}
+            )
+
+        # Load compare results to get mapping of OCR filenames to original filenames
+        with open(COMPARE_FILE, "r", encoding="utf-8") as f:
+            compare_results = json.load(f)
+        
+        # Create mapping: OCR filename -> original filename
+        ocr_to_original = {}
+        if os.path.exists(CACHE_FILE):
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                ocr_results = json.load(f)
+                for result in ocr_results:
+                    new_filename = result.get("new_filename")
+                    original_filename = result.get("original_filename")
+                    if new_filename and original_filename:
+                        ocr_to_original[new_filename] = original_filename
+
         files_organized = []
         target_folders_set = set()
+        errors = []
 
         for selection in selections:
-            image_name = selection.image  # Original OCR filename
-            selected_name = selection.selected_name  # User's choice
+            ocr_filename = selection.image  # This is the OCR-generated filename
+            selected_name = selection.selected_name  # User's product name choice
             target = selection.target or "output"
             nhr_reason = selection.nhr_reason
 
-            if not all([image_name, selected_name]):
-                print(f"Skipping incomplete selection: {selection}")
+            if not all([ocr_filename, selected_name]):
+                errors.append(f"Skipping incomplete selection: {selection}")
                 continue
 
-            source_path = os.path.join(PROCESSED_DIR, image_name)
+            source_path = os.path.join(PROCESSED_DIR, ocr_filename)
             
             if not os.path.exists(source_path):
-                print(f"Source file not found: {source_path}")
+                errors.append(f"Source file not found: {source_path}")
                 continue
 
-            # Sanitize user-selected name for filename
-            safe_name = selected_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
-            renamed_file = f"{safe_name}.jpg"
+            # Get original filename for input folder
+            original_filename = ocr_to_original.get(ocr_filename, ocr_filename)
 
-            # Always copy original to input/ with OCR name
-            input_paths = move_file_to_folders(
-                source_path,
-                image_name,  # Keep OCR name
-                ["input"],
-                PROCESSED_DIR
-            )
-            if input_paths:
-                target_folders_set.add("input")
-                files_organized.append({
-                    "original": image_name,
-                    "target": "input",
-                    "filename": image_name
-                })
+            # Sanitize user-selected name for filename (keep spaces, only remove path separators)
+            safe_name = selected_name.replace("/", "-").replace("\\", "-")
+            
+            # Get file extension from source file
+            _, source_ext = os.path.splitext(source_path)
+            if not source_ext:
+                source_ext = ".jpg"  # Default to .jpg if no extension
+            
+            # Remove extension from safe_name if it already has one to avoid double extensions
+            if safe_name.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.bmp')):
+                safe_name = os.path.splitext(safe_name)[0]
+            
+            renamed_file = f"{safe_name}{source_ext}"
 
+            # Prepare all target folders and filenames for this file
+            folders_to_create = []
+            
+            # Always include input with original filename
+            folders_to_create.append(("input", original_filename))
+            
             # Handle target-specific logic
             if target == "nhr" and nhr_reason:
-                # NHR case: copy original file (OCR name) to nhr/<reason>/
+                # NHR case: add nhr/<reason>/ with original filename
                 nhr_folder = f"nhr/{nhr_reason}"
-                nhr_paths = move_file_to_folders(
-                    source_path,
-                    image_name,  # Keep OCR name for NHR
-                    [nhr_folder],
-                    PROCESSED_DIR
-                )
-                if nhr_paths:
-                    target_folders_set.add(nhr_folder)
-                    files_organized.append({
-                        "original": image_name,
-                        "target": nhr_folder,
-                        "filename": image_name,
-                        "user_selected": selected_name
-                    })
+                folders_to_create.append((nhr_folder, original_filename))
             else:
-                # Normal case: copy renamed file to both output/ and upload/
-                output_paths = move_file_to_folders(
-                    source_path,
-                    renamed_file,  # User-selected name
-                    ["output", "upload"],
-                    PROCESSED_DIR
-                )
-                if output_paths:
-                    target_folders_set.add("output")
-                    target_folders_set.add("upload")
-                    for folder in ["output", "upload"]:
-                        files_organized.append({
-                            "original": image_name,
-                            "target": folder,
-                            "filename": renamed_file,
-                            "renamed_to": selected_name
-                        })
+                # Normal case: add output/ and upload/ with renamed file
+                folders_to_create.append(("output", renamed_file))
+                folders_to_create.append(("upload", renamed_file))
+
+            # Process all copies for this file
+            for folder, filename in folders_to_create:
+                # Create target directory if it doesn't exist
+                target_dir = os.path.join(PROCESSED_DIR, folder)
+                os.makedirs(target_dir, exist_ok=True)
+                
+                # Copy file to target
+                target_path = os.path.join(target_dir, filename)
+                shutil.copy2(source_path, target_path)
+                
+                target_folders_set.add(folder)
+                
+                # Record the operation
+                file_info = {
+                    "ocr_filename": ocr_filename,
+                    "original_filename": original_filename,
+                    "target": folder,
+                    "filename": filename
+                }
+                
+                if folder not in ["input"] and target != "nhr":
+                    file_info["renamed_to"] = selected_name
+                elif "nhr" in folder:
+                    file_info["user_selected"] = selected_name
+                    file_info["nhr_reason"] = nhr_reason
+                    
+                files_organized.append(file_info)
 
         # Upload all organized files to Drive
         if not target_folders_set:
             return JSONResponse(
                 status_code=400,
-                content={"error": "No files were organized for upload"}
+                content={
+                    "error": "No files were organized for upload",
+                    "errors": errors
+                }
             )
 
         print(f"Target folders to upload: {target_folders_set}")
@@ -241,12 +273,18 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
             target_folders=list(target_folders_set)
         )
 
-        return {
+        response = {
             "message": f"Upload complete. Processed {len(selections)} selections.",
             "files_organized": files_organized,
             "upload_result": upload_result,
             "user_id": user_id
         }
+
+        if errors:
+            response["errors"] = errors
+            response["error_count"] = len(errors)
+
+        return response
 
     except Exception as e:
         import traceback
