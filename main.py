@@ -234,9 +234,20 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
             print(f"   Original filename: {original_filename}")
 
             # Sanitize user-selected name for filename
-            safe_name = selected_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
+            # Remove file extension if it exists
+            safe_name = selected_name
+            if safe_name.lower().endswith('.jpg') or safe_name.lower().endswith('.jpeg') or safe_name.lower().endswith('.png'):
+                safe_name = os.path.splitext(safe_name)[0]
+            
+            # Replace underscores with spaces
+            safe_name = safe_name.replace("_", " ")
+            # Remove illegal filename characters (but keep spaces)
+            safe_name = safe_name.replace("/", "").replace("\\", "")
             safe_name = safe_name.replace(":", "").replace("*", "").replace("?", "")
             safe_name = safe_name.replace('"', "").replace("<", "").replace(">", "").replace("|", "")
+            # Clean up multiple spaces
+            safe_name = " ".join(safe_name.split())
+            
             renamed_file = f"{safe_name}.jpg"
             print(f"   Renamed file: {renamed_file}")
 
