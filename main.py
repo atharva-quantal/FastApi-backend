@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from drive_utils import (
     USER_TOKENS, USER_DRIVE_STRUCTURES, init_drive, oauth_callback,
     upload_to_drive, is_drive_ready, debug_drive_structure,
-    get_user_id_from_credentials, ensure_local_folders
+    get_user_id_from_credentials, ensure_local_folders, move_file_to_folders
 )
 
 from ocr import process_image
@@ -67,33 +67,6 @@ def clear_folder(folder: str):
                 shutil.rmtree(file_path)
     else:
         os.makedirs(folder, exist_ok=True)
-
-
-def copy_file_to_folders(source_path: str, filename: str, target_folders: List[str], base_dir: str) -> List[str]:
-    """
-    Copy a file to multiple target folders within base_dir.
-    Returns list of destination paths that were successfully created.
-    """
-    created_paths = []
-    
-    if not os.path.exists(source_path):
-        print(f"⚠️ Source file not found: {source_path}")
-        return created_paths
-    
-    for folder in target_folders:
-        folder_path = os.path.join(base_dir, folder)
-        os.makedirs(folder_path, exist_ok=True)
-        
-        dest_path = os.path.join(folder_path, filename)
-        
-        try:
-            shutil.copy2(source_path, dest_path)
-            created_paths.append(dest_path)
-            print(f"✅ Copied to: {dest_path}")
-        except Exception as e:
-            print(f"❌ Failed to copy to {dest_path}: {e}")
-    
-    return created_paths
 
 
 # -------------------------------
@@ -180,7 +153,7 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
                 content={"error": f"Drive not connected for user {user_id}. Please connect Drive first."}
             )
 
-        # Verify compare results exist - CRITICAL: This ensures compare has run
+        # Verify compare results exist
         if not os.path.exists(COMPARE_FILE):
             return JSONResponse(
                 status_code=400,
@@ -206,17 +179,11 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
         target_folders_set = set()
         errors = []
 
-        print(f"\n🔄 Processing {len(selections)} selections for Drive upload...")
-
-        for idx, selection in enumerate(selections, 1):
+        for selection in selections:
             ocr_filename = selection.image  # This is the OCR-generated filename
             selected_name = selection.selected_name  # User's product name choice
             target = selection.target or "output"
             nhr_reason = selection.nhr_reason
-
-            print(f"\n📁 [{idx}/{len(selections)}] Processing: {ocr_filename}")
-            print(f"   User selected: {selected_name}")
-            print(f"   Target: {target}")
 
             if not all([ocr_filename, selected_name]):
                 errors.append(f"Skipping incomplete selection: {selection}")
@@ -226,35 +193,19 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
             
             if not os.path.exists(source_path):
                 errors.append(f"Source file not found: {source_path}")
-                print(f"   ❌ Source file not found: {source_path}")
                 continue
 
             # Get original filename for input folder
             original_filename = ocr_to_original.get(ocr_filename, ocr_filename)
-            print(f"   Original filename: {original_filename}")
 
             # Sanitize user-selected name for filename
-            # Remove file extension if it exists
-            safe_name = selected_name
-            if safe_name.lower().endswith('.jpg') or safe_name.lower().endswith('.jpeg') or safe_name.lower().endswith('.png'):
-                safe_name = os.path.splitext(safe_name)[0]
-            
-            # Replace underscores with spaces
-            safe_name = safe_name.replace("_", " ")
-            # Remove illegal filename characters (but keep spaces)
-            safe_name = safe_name.replace("/", "").replace("\\", "")
-            safe_name = safe_name.replace(":", "").replace("*", "").replace("?", "")
-            safe_name = safe_name.replace('"', "").replace("<", "").replace(">", "").replace("|", "")
-            # Clean up multiple spaces
-            safe_name = " ".join(safe_name.split())
-            
+            safe_name = selected_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
             renamed_file = f"{safe_name}.jpg"
-            print(f"   Renamed file: {renamed_file}")
 
             # Always copy to input/ with original filename
-            input_paths = copy_file_to_folders(
+            input_paths = move_file_to_folders(
                 source_path,
-                original_filename,
+                original_filename,  # Use original user-uploaded filename
                 ["input"],
                 PROCESSED_DIR
             )
@@ -266,15 +217,14 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
                     "target": "input",
                     "filename": original_filename
                 })
-                print(f"   ✅ Copied to input/ as {original_filename}")
 
             # Handle target-specific logic
             if target == "nhr" and nhr_reason:
                 # NHR case: copy with original filename to nhr/<reason>/
                 nhr_folder = f"nhr/{nhr_reason}"
-                nhr_paths = copy_file_to_folders(
+                nhr_paths = move_file_to_folders(
                     source_path,
-                    original_filename,
+                    original_filename,  # Use original filename for NHR
                     [nhr_folder],
                     PROCESSED_DIR
                 )
@@ -288,12 +238,11 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
                         "user_selected": selected_name,
                         "nhr_reason": nhr_reason
                     })
-                    print(f"   ✅ Copied to {nhr_folder}/ as {original_filename}")
             else:
                 # Normal case: copy renamed file to both output/ and upload/
-                output_paths = copy_file_to_folders(
+                output_paths = move_file_to_folders(
                     source_path,
-                    renamed_file,
+                    renamed_file,  # User-selected product name
                     ["output", "upload"],
                     PROCESSED_DIR
                 )
@@ -308,7 +257,6 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
                             "filename": renamed_file,
                             "renamed_to": selected_name
                         })
-                    print(f"   ✅ Copied to output/ and upload/ as {renamed_file}")
 
         # Upload all organized files to Drive
         if not target_folders_set:
@@ -320,47 +268,31 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
                 }
             )
 
-        print(f"\n📤 Uploading to Drive...")
-        print(f"   Target folders: {list(target_folders_set)}")
-        
+        print(f"Target folders to upload: {target_folders_set}")
         upload_result = upload_to_drive(
             user_id=user_id,
             local_dir=PROCESSED_DIR,
             target_folders=list(target_folders_set)
         )
 
-        # Count successful uploads
-        successful_count = len([f for f in files_organized if "error" not in f])
-        
         response = {
-            "success": True,
-            "message": f"✅ Successfully uploaded {successful_count} images to Google Drive",
+            "message": f"Upload complete. Processed {len(selections)} selections.",
             "files_organized": files_organized,
             "upload_result": upload_result,
-            "user_id": user_id,
-            "folders_uploaded": list(target_folders_set)
+            "user_id": user_id
         }
 
         if errors:
             response["errors"] = errors
             response["error_count"] = len(errors)
-            response["message"] = f"⚠️ Uploaded {successful_count} images with {len(errors)} errors"
 
-        print(f"\n✅ Drive upload complete!")
         return response
 
     except Exception as e:
         import traceback
         print(f"🚨 Upload error: {e}")
         print(traceback.format_exc())
-        return JSONResponse(
-            status_code=500, 
-            content={
-                "success": False,
-                "error": str(e),
-                "message": f"❌ Failed to upload to Drive: {str(e)}"
-            }
-        )
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
 
 @app.get("/get-compare-results")

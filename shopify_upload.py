@@ -6,12 +6,12 @@ import shutil
 
 def upload_image_to_shopify(image_path: str, gid: str, final_name: str):
     """
-    Rename locally with final_name and upload to Shopify product,
-    replacing all existing ones.
+    Upload image to Shopify product, replacing all existing images.
+    Uses the final_name with spaces preserved for the filename.
     """
     shop_handle = os.getenv("SHOP_NAME")
     access_token = os.getenv("ACCESS_TOKEN")
-    api_version = os.getenv("API_VERSION", "2023-10")  # default to latest stable
+    api_version = os.getenv("API_VERSION", "2023-10")
 
     # Extract numeric product ID from gid
     try:
@@ -28,37 +28,46 @@ def upload_image_to_shopify(image_path: str, gid: str, final_name: str):
     images_url = f"{base_url}/images.json"
 
     # Step 1: Delete existing images
-    get_resp = requests.get(images_url, headers=headers)
-    get_resp.raise_for_status()
-    existing_images = get_resp.json().get("images", [])
+    try:
+        get_resp = requests.get(images_url, headers=headers)
+        get_resp.raise_for_status()
+        existing_images = get_resp.json().get("images", [])
 
-    for img in existing_images:
-        image_id = img["id"]
-        delete_url = f"{base_url}/images/{image_id}.json"
-        requests.delete(delete_url, headers=headers).raise_for_status()
+        for img in existing_images:
+            image_id = img["id"]
+            delete_url = f"{base_url}/images/{image_id}.json"
+            delete_resp = requests.delete(delete_url, headers=headers)
+            delete_resp.raise_for_status()
+            print(f"Deleted existing image: {image_id}")
+    except Exception as e:
+        print(f"Warning: Could not delete existing images: {e}")
 
-    # Step 2: Build safe filename (no local overwrite)
+    # Step 2: Sanitize filename (keep spaces, remove only illegal chars)
+    # Remove illegal filename characters but keep spaces
+    safe_name = final_name.replace("/", "-").replace("\\", "-")
+    safe_name = safe_name.replace(":", "").replace("*", "").replace("?", "")
+    safe_name = safe_name.replace('"', "").replace("<", "").replace(">", "").replace("|", "")
+    
     ext = os.path.splitext(image_path)[1] or ".jpg"
-    safe_name = final_name.replace(" ", "_").replace("/", "-")
-    renamed_path = os.path.join(os.path.dirname(image_path), f"{safe_name}{ext}")
-
-    # Create a temporary renamed copy
-    if image_path != renamed_path:
-        shutil.copy(image_path, renamed_path)
+    shopify_filename = f"{safe_name}{ext}"
 
     # Step 3: Upload new image
-    with open(renamed_path, "rb") as img_file:
+    with open(image_path, "rb") as img_file:
         encoded = base64.b64encode(img_file.read()).decode("utf-8")
 
     payload = {
         "image": {
             "attachment": encoded,
-            "filename": os.path.basename(renamed_path),
+            "filename": shopify_filename,
             "position": 1
         }
     }
 
+    print(f"Uploading to Shopify as: {shopify_filename}")
     resp = requests.post(images_url, json=payload, headers=headers)
     resp.raise_for_status()
 
-    return resp.json().get("image")
+    uploaded_image = resp.json().get("image")
+    print(f"Successfully uploaded image ID: {uploaded_image.get('id')}")
+    
+    return uploaded_image
