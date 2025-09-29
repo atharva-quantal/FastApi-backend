@@ -136,9 +136,9 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
     Upload images with user-selected names to Google Drive.
     
     File organization logic:
-    - input/ → Original OCR filename (unchanged)
-    - output/ & upload/ → User-selected renamed file
-    - nhr/<reason>/ → User-selected renamed file
+    - input/ → Original OCR filename (for all images)
+    - output/ & upload/ → User-selected renamed file (for normal flow)
+    - nhr/<reason>/ → Original OCR filename (for NHR flow)
     """
     try:
         user_id = payload.user_id
@@ -165,24 +165,24 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
                 print(f"Skipping incomplete selection: {selection}")
                 continue
 
-            # Sanitize user-selected name for filename
-            safe_name = selected_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
-            renamed_file = f"{safe_name}.jpg"
-
             source_path = os.path.join(PROCESSED_DIR, image_name)
             
             if not os.path.exists(source_path):
                 print(f"Source file not found: {source_path}")
                 continue
 
-            # Step 1: Copy original file to input/ with OCR name
-            input_path = move_file_to_folders(
+            # Sanitize user-selected name for filename
+            safe_name = selected_name.replace(" ", "_").replace("/", "_").replace("\\", "_")
+            renamed_file = f"{safe_name}.jpg"
+
+            # Always copy original to input/ with OCR name
+            input_paths = move_file_to_folders(
                 source_path,
                 image_name,  # Keep OCR name
                 ["input"],
                 PROCESSED_DIR
             )
-            if input_path:
+            if input_paths:
                 target_folders_set.add("input")
                 files_organized.append({
                     "original": image_name,
@@ -190,35 +190,36 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
                     "filename": image_name
                 })
 
-            # Step 2: Copy renamed file to appropriate folders
+            # Handle target-specific logic
             if target == "nhr" and nhr_reason:
-                # NHR case: only to nhr/<reason>/
+                # NHR case: copy original file (OCR name) to nhr/<reason>/
                 nhr_folder = f"nhr/{nhr_reason}"
-                nhr_path = move_file_to_folders(
+                nhr_paths = move_file_to_folders(
                     source_path,
-                    renamed_file,  # User-selected name
+                    image_name,  # Keep OCR name for NHR
                     [nhr_folder],
                     PROCESSED_DIR
                 )
-                if nhr_path:
+                if nhr_paths:
                     target_folders_set.add(nhr_folder)
                     files_organized.append({
                         "original": image_name,
                         "target": nhr_folder,
-                        "filename": renamed_file,
-                        "renamed_to": selected_name
+                        "filename": image_name,
+                        "user_selected": selected_name
                     })
             else:
-                # Normal case: to both output/ and upload/
-                for folder in ["output", "upload"]:
-                    renamed_path = move_file_to_folders(
-                        source_path,
-                        renamed_file,  # User-selected name
-                        [folder],
-                        PROCESSED_DIR
-                    )
-                    if renamed_path:
-                        target_folders_set.add(folder)
+                # Normal case: copy renamed file to both output/ and upload/
+                output_paths = move_file_to_folders(
+                    source_path,
+                    renamed_file,  # User-selected name
+                    ["output", "upload"],
+                    PROCESSED_DIR
+                )
+                if output_paths:
+                    target_folders_set.add("output")
+                    target_folders_set.add("upload")
+                    for folder in ["output", "upload"]:
                         files_organized.append({
                             "original": image_name,
                             "target": folder,
@@ -233,6 +234,7 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
                 content={"error": "No files were organized for upload"}
             )
 
+        print(f"Target folders to upload: {target_folders_set}")
         upload_result = upload_to_drive(
             user_id=user_id,
             local_dir=PROCESSED_DIR,
