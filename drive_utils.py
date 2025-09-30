@@ -27,12 +27,15 @@ os.makedirs(PICKLE_BASE_DIR, exist_ok=True)
 # -------------------------------
 # Environment variables
 # -------------------------------
+# -------------------------------
+# Environment variables
+# -------------------------------
 CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID", "wineocr-project")
 REDIRECT_URI = os.getenv(
     "GOOGLE_REDIRECT_URI",
-    "https://fastapi-backend-4wqb.onrender.com/auth/callback"  # Changed from /drive-callback
+    "https://fastapi-backend-4wqb.onrender.com/auth/callback"  # ✅ Single correct default
 )
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://david-f-frontend.vercel.app")
 
@@ -47,9 +50,10 @@ CLIENT_CONFIG = {
         "token_uri": "https://oauth2.googleapis.com/token",
         "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
         "client_secret": CLIENT_SECRET,
-        "redirect_uris": "https://david-f-frontend.vercel.app",
+        "redirect_uris": [REDIRECT_URI],  # ✅ must be a list, not a string
     }
 }
+
 
 # Updated SCOPES to include everything in one flow
 SCOPES = [
