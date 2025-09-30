@@ -8,8 +8,8 @@ import json
 from fastapi import APIRouter
 from pydantic import BaseModel
 from drive_utils import (
-    USER_TOKENS, USER_DRIVE_STRUCTURES, init_drive, oauth_callback,
-    upload_to_drive, is_drive_ready, debug_drive_structure,
+    USER_TOKENS, USER_DRIVE_STRUCTURES, init_auth, oauth_callback,
+    upload_to_drive, is_authenticated, debug_drive_structure,
     get_user_id_from_credentials, ensure_local_folders, move_file_to_folders
 )
 
@@ -90,13 +90,67 @@ def startup_event():
 
 
 # -------------------------------
-# Drive Endpoints
+# UNIFIED Authentication Endpoints (Google + Drive)
+# -------------------------------
+@app.post("/auth/init")
+def init_auth_endpoint():
+    """
+    Start unified Google + Drive authentication.
+    Returns OAuth URL that handles both Google sign-in and Drive access.
+    """
+    try:
+        return init_auth()
+    except Exception as e:
+        print(f"Init auth error: {str(e)}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/auth/callback")
+def auth_callback_endpoint(code: str = Query(...), state: str = Query(...)):
+    """
+    Handle unified OAuth callback.
+    Creates user session, sets up Drive folders, and redirects to frontend.
+    """
+    try:
+        return oauth_callback(code, state)
+    except Exception as e:
+        print(f"Auth callback error: {str(e)}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+@app.get("/auth/status")
+def auth_status_endpoint(user_id: Optional[str] = Query(None)):
+    """
+    Check if user is authenticated and Drive is ready.
+    Returns unified status for both Google authentication and Drive connection.
+    """
+    try:
+        if not user_id:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "user_id parameter is required"}
+            )
+        
+        status = is_authenticated(user_id)
+        debug_info = debug_drive_structure()
+        return {**status, "debug": debug_info}
+    except Exception as e:
+        print(f"Auth status error: {str(e)}")
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
+
+# -------------------------------
+# DEPRECATED Endpoints (kept for backward compatibility)
 # -------------------------------
 @app.post("/init-drive")
 def init_drive_endpoint():
-    """Start Google Drive sign-in and return OAuth URL."""
+    """
+    DEPRECATED: Use /auth/init instead.
+    This endpoint is kept for backward compatibility.
+    """
+    print("⚠️ Warning: /init-drive is deprecated. Use /auth/init instead.")
     try:
-        return init_drive()
+        return init_auth()
     except Exception as e:
         print(f"Init drive error: {str(e)}")
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -104,7 +158,11 @@ def init_drive_endpoint():
 
 @app.get("/drive-callback")
 def drive_callback_endpoint(code: str = Query(...), state: str = Query(...)):
-    """Handle Google Drive OAuth callback."""
+    """
+    DEPRECATED: Use /auth/callback instead.
+    This endpoint is kept for backward compatibility.
+    """
+    print("⚠️ Warning: /drive-callback is deprecated. Use /auth/callback instead.")
     try:
         return oauth_callback(code, state)
     except Exception as e:
@@ -114,7 +172,11 @@ def drive_callback_endpoint(code: str = Query(...), state: str = Query(...)):
 
 @app.get("/drive-status")
 def drive_status_endpoint(user_id: Optional[str] = Query(None)):
-    """Check if Drive is linked and ready for a specific user."""
+    """
+    DEPRECATED: Use /auth/status instead.
+    This endpoint is kept for backward compatibility.
+    """
+    print("⚠️ Warning: /drive-status is deprecated. Use /auth/status instead.")
     try:
         if not user_id:
             return JSONResponse(
@@ -122,7 +184,7 @@ def drive_status_endpoint(user_id: Optional[str] = Query(None)):
                 content={"error": "user_id parameter is required"}
             )
         
-        status = is_drive_ready(user_id)
+        status = is_authenticated(user_id)
         debug_info = debug_drive_structure()
         return {**status, "debug": debug_info}
     except Exception as e:
@@ -130,6 +192,9 @@ def drive_status_endpoint(user_id: Optional[str] = Query(None)):
         return JSONResponse(status_code=500, content={"error": str(e)})
 
 
+# -------------------------------
+# Drive Upload Endpoint
+# -------------------------------
 @app.post("/upload-to-drive")
 def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
     """
@@ -145,12 +210,12 @@ def upload_to_drive_endpoint(payload: DriveUploadRequest = Body(...)):
         user_id = payload.user_id
         selections = payload.selections
 
-        # Check Drive connection
-        drive_status = is_drive_ready(user_id)
-        if not drive_status.get("linked", False):
+        # Check authentication and Drive connection
+        auth_status = is_authenticated(user_id)
+        if not auth_status.get("authenticated", False):
             return JSONResponse(
                 status_code=400,
-                content={"error": f"Drive not connected for user {user_id}. Please connect Drive first."}
+                content={"error": f"User not authenticated: {user_id}. Please sign in first."}
             )
 
         # Verify compare results exist

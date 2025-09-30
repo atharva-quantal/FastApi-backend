@@ -32,7 +32,7 @@ CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 PROJECT_ID = os.getenv("GOOGLE_PROJECT_ID", "wineocr-project")
 REDIRECT_URI = os.getenv(
     "GOOGLE_REDIRECT_URI",
-    "https://fastapi-backend-4wqb.onrender.com/drive-callback"
+    "https://fastapi-backend-4wqb.onrender.com/auth/callback"  # Changed from /drive-callback
 )
 FRONTEND_URL = os.getenv("FRONTEND_URL", "https://david-f-frontend.vercel.app")
 
@@ -51,6 +51,7 @@ CLIENT_CONFIG = {
     }
 }
 
+# Updated SCOPES to include everything in one flow
 SCOPES = [
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/drive",
@@ -80,6 +81,21 @@ def get_user_id_from_credentials(credentials) -> str:
     
     import time
     return hashlib.sha256(str(time.time()).encode()).hexdigest()[:16]
+
+
+def get_user_info_from_credentials(credentials) -> Dict[str, str]:
+    """Get user email and name from credentials."""
+    try:
+        service = build("oauth2", "v2", credentials=credentials)
+        user_info = service.userinfo().get().execute()
+        return {
+            "email": user_info.get("email", ""),
+            "name": user_info.get("name", ""),
+            "picture": user_info.get("picture", "")
+        }
+    except Exception as e:
+        logger.warning(f"Could not get user info: {e}")
+        return {"email": "", "name": "", "picture": ""}
 
 
 def get_user_pickle_path(user_id: str) -> str:
@@ -285,23 +301,28 @@ def get_folder_structure(service, user_id: str) -> Dict[str, str]:
 
 
 # -------------------------------
-# OAuth functions
+# OAuth functions - UNIFIED GOOGLE + DRIVE
 # -------------------------------
-def init_drive() -> Dict[str, str]:
-    """Generate Google OAuth consent URL for Drive sign-in."""
+def init_auth() -> Dict[str, str]:
+    """Generate Google OAuth consent URL for unified Google + Drive sign-in."""
     flow = google_auth_oauthlib.flow.Flow.from_client_config(
         CLIENT_CONFIG, scopes=SCOPES
     )
     flow.redirect_uri = REDIRECT_URI
 
     auth_url, state = flow.authorization_url(
-        access_type="offline", include_granted_scopes="true", prompt="consent"
+        access_type="offline", 
+        include_granted_scopes="true", 
+        prompt="consent"
     )
     return {"url": auth_url, "state": state}
 
 
 def oauth_callback(code: str, state: str):
-    """Exchange code for tokens, create folders, then redirect to frontend."""
+    """
+    Unified callback - Exchange code for tokens, create Drive folders, 
+    then redirect to frontend with success message.
+    """
     try:
         flow = google_auth_oauthlib.flow.Flow.from_client_config(
             CLIENT_CONFIG, scopes=SCOPES, state=state
@@ -311,24 +332,32 @@ def oauth_callback(code: str, state: str):
 
         credentials = flow.credentials
         user_id = get_user_id_from_credentials(credentials)
+        user_info = get_user_info_from_credentials(credentials)
+        
+        # Store credentials
         USER_TOKENS[user_id] = credentials
         
+        # Create Drive service and folder structure
         service = build("drive", "v3", credentials=credentials)
         structure = get_folder_structure(service, user_id)
 
-        logger.info(f"Drive connected successfully for user {user_id}")
-        return RedirectResponse(url=f"{FRONTEND_URL}?drive_connected=success&user_id={user_id}")
+        logger.info(f"User authenticated and Drive connected successfully for user {user_id}")
+        
+        # Redirect with all necessary info
+        return RedirectResponse(
+            url=f"{FRONTEND_URL}?auth_success=true&user_id={user_id}&email={user_info['email']}&name={user_info['name']}"
+        )
 
     except Exception as e:
-        logger.error(f"Error during Drive callback: {traceback.format_exc()}")
-        return RedirectResponse(url=f"{FRONTEND_URL}?drive_error={str(e)}")
+        logger.error(f"Error during OAuth callback: {traceback.format_exc()}")
+        return RedirectResponse(url=f"{FRONTEND_URL}?auth_error={str(e)}")
 
 
-def is_drive_ready(user_id: str = None) -> Dict[str, object]:
-    """Check if Drive is linked and ready for a specific user."""
+def is_authenticated(user_id: str = None) -> Dict[str, object]:
+    """Check if user is authenticated and Drive is ready."""
     if not user_id:
         return {
-            "linked": False,
+            "authenticated": False,
             "error": "No user_id provided",
             "total_users": len(USER_TOKENS)
         }
@@ -336,7 +365,8 @@ def is_drive_ready(user_id: str = None) -> Dict[str, object]:
     creds = USER_TOKENS.get(user_id)
     if not creds:
         return {
-            "linked": False,
+            "authenticated": False,
+            "drive_ready": False,
             "folder_structure_cached": user_id in USER_DRIVE_STRUCTURES,
             "pickle_file_exists": os.path.exists(get_user_pickle_path(user_id)),
             "user_id": user_id
@@ -352,11 +382,25 @@ def is_drive_ready(user_id: str = None) -> Dict[str, object]:
         valid = False
     
     return {
-        "linked": valid,
+        "authenticated": valid,
+        "drive_ready": valid,
         "folder_structure_cached": user_id in USER_DRIVE_STRUCTURES,
         "pickle_file_exists": os.path.exists(get_user_pickle_path(user_id)),
         "user_id": user_id
     }
+
+
+# Keep backward compatibility (deprecated)
+def init_drive() -> Dict[str, str]:
+    """Deprecated: Use init_auth() instead."""
+    logger.warning("init_drive() is deprecated. Use init_auth() instead.")
+    return init_auth()
+
+
+def is_drive_ready(user_id: str = None) -> Dict[str, object]:
+    """Deprecated: Use is_authenticated() instead."""
+    logger.warning("is_drive_ready() is deprecated. Use is_authenticated() instead.")
+    return is_authenticated(user_id)
 
 
 # -------------------------------
@@ -370,7 +414,7 @@ def upload_to_drive(user_id: str, local_dir: str, target_folders: List[str]) -> 
     try:
         creds = USER_TOKENS.get(user_id)
         if not creds:
-            return {"error": f"Drive not initialized for user {user_id}"}
+            return {"error": f"User not authenticated: {user_id}"}
 
         if not refresh_credentials_if_needed(creds):
             return {"error": "Failed to refresh expired credentials"}
