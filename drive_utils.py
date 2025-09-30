@@ -326,6 +326,7 @@ def oauth_callback(code: str, state: str):
     """
     Unified callback - Exchange code for tokens, create Drive folders, 
     then redirect to frontend with success message.
+    Uses 302 redirect to ensure browser performs a GET.
     """
     try:
         flow = google_auth_oauthlib.flow.Flow.from_client_config(
@@ -337,24 +338,29 @@ def oauth_callback(code: str, state: str):
         credentials = flow.credentials
         user_id = get_user_id_from_credentials(credentials)
         user_info = get_user_info_from_credentials(credentials)
-        
+
         # Store credentials
         USER_TOKENS[user_id] = credentials
-        
+
         # Create Drive service and folder structure
         service = build("drive", "v3", credentials=credentials)
         structure = get_folder_structure(service, user_id)
 
-        logger.info(f"User authenticated and Drive connected successfully for user {user_id}")
-        
-        # Redirect with all necessary info
-        return RedirectResponse(
-            url=f"{FRONTEND_URL}?auth_success=true&user_id={user_id}&email={user_info['email']}&name={user_info['name']}"
+        logger.info(f"User authenticated successfully: {user_id}")
+        redirect_url = (
+            f"{FRONTEND_URL}?auth_success=true&user_id={user_id}"
+            f"&email={user_info['email']}&name={user_info['name']}"
         )
+        logger.info(f"Redirecting to frontend URL: {redirect_url}")
+
+        # 302 redirect
+        return RedirectResponse(url=redirect_url, status_code=302)
 
     except Exception as e:
-        logger.error(f"Error during OAuth callback: {traceback.format_exc()}")
-        return RedirectResponse(url=f"{FRONTEND_URL}?auth_error={str(e)}")
+        logger.error(f"OAuth callback error: {traceback.format_exc()}")
+        error_redirect = f"{FRONTEND_URL}?auth_error={str(e)}"
+        return RedirectResponse(url=error_redirect, status_code=302)
+
 
 
 def is_authenticated(user_id: str = None) -> Dict[str, object]:
