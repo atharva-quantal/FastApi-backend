@@ -291,6 +291,20 @@ def _get_or_create_structure(service, user_id: str) -> Dict[str, str]:
 
 def get_folder_structure(service, user_id: str) -> Dict[str, str]:
     """Get folder structure for user - load from pickle or create new."""
+    # Always verify existing structure if it exists
+    if user_id in USER_DRIVE_STRUCTURES:
+        if verify_folder_structure(service, USER_DRIVE_STRUCTURES[user_id]):
+            return USER_DRIVE_STRUCTURES[user_id]
+        else:
+            # Clear invalid structure
+            del USER_DRIVE_STRUCTURES[user_id]
+            # Delete the pickle file too
+            pickle_path = get_user_pickle_path(user_id)
+            if os.path.exists(pickle_path):
+                os.remove(pickle_path)
+            logger.info(f"Cleared invalid folder structure for user {user_id}")
+    
+    # Try loading from pickle if not in memory
     if user_id not in USER_DRIVE_STRUCTURES:
         saved_structure = load_folder_structure(user_id)
         
