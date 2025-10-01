@@ -21,14 +21,8 @@ logger = logging.getLogger(__name__)
 USER_TOKENS: Dict[str, object] = {}
 USER_DRIVE_STRUCTURES: Dict[str, Dict[str, str]] = {}
 
-# Create absolute path for pickle directory
-PICKLE_BASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "user_data")
-try:
-    os.makedirs(PICKLE_BASE_DIR, exist_ok=True)
-    logger.info(f"Ensuring pickle directory exists at: {PICKLE_BASE_DIR}")
-except Exception as e:
-    logger.error(f"Failed to create pickle directory: {e}")
-    raise
+PICKLE_BASE_DIR = "user_data"
+os.makedirs(PICKLE_BASE_DIR, exist_ok=True)
 
 # -------------------------------
 # Environment variables
@@ -119,22 +113,12 @@ def get_user_pickle_path(user_id: str) -> str:
 def save_folder_structure(user_id: str, structure: Dict[str, str]) -> None:
     """Save folder structure to user-specific pickle file."""
     try:
-        # Ensure directory exists again (in case it was deleted)
-        os.makedirs(PICKLE_BASE_DIR, exist_ok=True)
-        
         pickle_path = get_user_pickle_path(user_id)
         with open(pickle_path, 'wb') as f:
             pickle.dump(structure, f)
-        
-        # Verify the file was written
-        if not os.path.exists(pickle_path):
-            raise IOError("Pickle file was not created")
-            
-        logger.info(f"Folder structure saved for user {user_id} at {pickle_path}")
+        logger.info(f"Folder structure saved for user {user_id}")
     except Exception as e:
         logger.error(f"Failed to save folder structure for user {user_id}: {e}")
-        logger.error(f"Pickle path attempted: {pickle_path}")
-        raise
 
 
 def load_folder_structure(user_id: str) -> Optional[Dict[str, str]]:
@@ -438,22 +422,12 @@ def upload_to_drive(user_id: str, local_dir: str, target_folders: List[str]) -> 
     Looks for files in local_dir/<target_folder>/ and uploads to corresponding Drive folder.
     """
     try:
-        # More detailed authentication checks
-        if not user_id:
-            logger.error("No user_id provided for upload")
-            return {"error": "No user_id provided"}
-
         creds = USER_TOKENS.get(user_id)
         if not creds:
-            logger.error(f"No credentials found for user {user_id}")
-            return {"error": f"User not authenticated: {user_id}. Please sign in again."}
+            return {"error": f"User not authenticated: {user_id}"}
 
-        # More robust credential refresh
-        if getattr(creds, 'expired', True):
-            logger.info(f"Credentials expired for user {user_id}, attempting refresh")
-            if not refresh_credentials_if_needed(creds):
-                logger.error(f"Failed to refresh credentials for user {user_id}")
-                return {"error": "Session expired. Please sign in again."}
+        if not refresh_credentials_if_needed(creds):
+            return {"error": "Failed to refresh expired credentials"}
 
         service = build("drive", "v3", credentials=creds)
         structure = get_folder_structure(service, user_id)
@@ -488,29 +462,12 @@ def upload_to_drive(user_id: str, local_dir: str, target_folders: List[str]) -> 
                     continue
 
                 try:
-                    # Validate file exists and is readable
-                    if not os.path.isfile(file_path):
-                        raise FileNotFoundError(f"File not found or not accessible: {file_path}")
-                    
-                    # Determine correct mimetype based on file extension
-                    file_ext = os.path.splitext(filename)[1].lower()
-                    mimetype = {
-                        '.jpg': 'image/jpeg',
-                        '.jpeg': 'image/jpeg',
-                        '.png': 'image/png',
-                        '.gif': 'image/gif'
-                    }.get(file_ext, 'image/jpeg')
-                    
-                    logger.info(f"Uploading {filename} (type: {mimetype}) to folder {target_folder}")
-                    media = MediaFileUpload(file_path, mimetype=mimetype, resumable=True)
+                    media = MediaFileUpload(file_path, mimetype="image/jpeg")
                     drive_file = service.files().create(
                         body={"name": filename, "parents": [drive_folder_id]},
                         media_body=media,
                         fields="id, name, webViewLink"
                     ).execute()
-                    
-                    if not drive_file.get("id"):
-                        raise Exception("Upload succeeded but no file ID returned")
 
                     all_uploaded.append({
                         "filename": filename,
