@@ -21,8 +21,14 @@ logger = logging.getLogger(__name__)
 USER_TOKENS: Dict[str, object] = {}
 USER_DRIVE_STRUCTURES: Dict[str, Dict[str, str]] = {}
 
-PICKLE_BASE_DIR = "user_data"
-os.makedirs(PICKLE_BASE_DIR, exist_ok=True)
+# Create absolute path for pickle directory
+PICKLE_BASE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "user_data")
+try:
+    os.makedirs(PICKLE_BASE_DIR, exist_ok=True)
+    logger.info(f"Ensuring pickle directory exists at: {PICKLE_BASE_DIR}")
+except Exception as e:
+    logger.error(f"Failed to create pickle directory: {e}")
+    raise
 
 # -------------------------------
 # Environment variables
@@ -113,12 +119,22 @@ def get_user_pickle_path(user_id: str) -> str:
 def save_folder_structure(user_id: str, structure: Dict[str, str]) -> None:
     """Save folder structure to user-specific pickle file."""
     try:
+        # Ensure directory exists again (in case it was deleted)
+        os.makedirs(PICKLE_BASE_DIR, exist_ok=True)
+        
         pickle_path = get_user_pickle_path(user_id)
         with open(pickle_path, 'wb') as f:
             pickle.dump(structure, f)
-        logger.info(f"Folder structure saved for user {user_id}")
+        
+        # Verify the file was written
+        if not os.path.exists(pickle_path):
+            raise IOError("Pickle file was not created")
+            
+        logger.info(f"Folder structure saved for user {user_id} at {pickle_path}")
     except Exception as e:
         logger.error(f"Failed to save folder structure for user {user_id}: {e}")
+        logger.error(f"Pickle path attempted: {pickle_path}")
+        raise
 
 
 def load_folder_structure(user_id: str) -> Optional[Dict[str, str]]:
