@@ -422,12 +422,22 @@ def upload_to_drive(user_id: str, local_dir: str, target_folders: List[str]) -> 
     Looks for files in local_dir/<target_folder>/ and uploads to corresponding Drive folder.
     """
     try:
+        # More detailed authentication checks
+        if not user_id:
+            logger.error("No user_id provided for upload")
+            return {"error": "No user_id provided"}
+
         creds = USER_TOKENS.get(user_id)
         if not creds:
-            return {"error": f"User not authenticated: {user_id}"}
+            logger.error(f"No credentials found for user {user_id}")
+            return {"error": f"User not authenticated: {user_id}. Please sign in again."}
 
-        if not refresh_credentials_if_needed(creds):
-            return {"error": "Failed to refresh expired credentials"}
+        # More robust credential refresh
+        if getattr(creds, 'expired', True):
+            logger.info(f"Credentials expired for user {user_id}, attempting refresh")
+            if not refresh_credentials_if_needed(creds):
+                logger.error(f"Failed to refresh credentials for user {user_id}")
+                return {"error": "Session expired. Please sign in again."}
 
         service = build("drive", "v3", credentials=creds)
         structure = get_folder_structure(service, user_id)
@@ -462,12 +472,29 @@ def upload_to_drive(user_id: str, local_dir: str, target_folders: List[str]) -> 
                     continue
 
                 try:
-                    media = MediaFileUpload(file_path, mimetype="image/jpeg")
+                    # Validate file exists and is readable
+                    if not os.path.isfile(file_path):
+                        raise FileNotFoundError(f"File not found or not accessible: {file_path}")
+                    
+                    # Determine correct mimetype based on file extension
+                    file_ext = os.path.splitext(filename)[1].lower()
+                    mimetype = {
+                        '.jpg': 'image/jpeg',
+                        '.jpeg': 'image/jpeg',
+                        '.png': 'image/png',
+                        '.gif': 'image/gif'
+                    }.get(file_ext, 'image/jpeg')
+                    
+                    logger.info(f"Uploading {filename} (type: {mimetype}) to folder {target_folder}")
+                    media = MediaFileUpload(file_path, mimetype=mimetype, resumable=True)
                     drive_file = service.files().create(
                         body={"name": filename, "parents": [drive_folder_id]},
                         media_body=media,
                         fields="id, name, webViewLink"
                     ).execute()
+                    
+                    if not drive_file.get("id"):
+                        raise Exception("Upload succeeded but no file ID returned")
 
                     all_uploaded.append({
                         "filename": filename,
