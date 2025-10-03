@@ -290,18 +290,24 @@ def _get_or_create_structure(service, user_id: str) -> Dict[str, str]:
 
 
 def get_folder_structure(service, user_id: str) -> Dict[str, str]:
-    """Get folder structure for user - load from pickle or create new."""
-    if user_id not in USER_DRIVE_STRUCTURES:
-        saved_structure = load_folder_structure(user_id)
-        
-        if saved_structure and verify_folder_structure(service, saved_structure):
-            logger.info(f"Using saved folder structure for user {user_id}")
-            USER_DRIVE_STRUCTURES[user_id] = saved_structure
-        else:
-            logger.info(f"Creating new folder structure for user {user_id}")
-            USER_DRIVE_STRUCTURES[user_id] = _get_or_create_structure(service, user_id)
-    
-    return USER_DRIVE_STRUCTURES[user_id]
+    """
+    Get or create a valid Drive folder structure for a user.
+    - Loads from pickle if available
+    - Verifies all folders exist
+    - Recreates missing folders if needed
+    """
+    saved_structure = load_folder_structure(user_id)
+
+    if saved_structure and verify_folder_structure(service, saved_structure):
+        logger.info(f"✅ Using existing folder structure for user {user_id}")
+        USER_DRIVE_STRUCTURES[user_id] = saved_structure
+        return saved_structure
+
+    logger.info(f"⚠️ Saved structure missing or invalid. Rebuilding for user {user_id}")
+    new_structure = _get_or_create_structure(service, user_id)
+    USER_DRIVE_STRUCTURES[user_id] = new_structure
+    return new_structure
+
 
 
 # -------------------------------
@@ -328,7 +334,7 @@ def oauth_callback(code: str, state: str):
     OAuth callback:
       - Exchange code for tokens
       - Store/reuse refresh tokens
-      - Create Drive folders if needed
+      - Ensure Drive folders exist (recreate if missing)
       - Redirect back to frontend with user info
     """
     try:
@@ -342,14 +348,14 @@ def oauth_callback(code: str, state: str):
         user_id = get_user_id_from_credentials(credentials)
         user_info = get_user_info_from_credentials(credentials)
 
-        # Reuse or update stored tokens
+        # Save/overwrite tokens in memory
         USER_TOKENS[user_id] = credentials
 
-        # Ensure Drive folder structure
+        # Ensure Drive folder structure (creates missing folders if needed)
         service = build("drive", "v3", credentials=credentials)
         structure = get_folder_structure(service, user_id)
 
-        logger.info(f"[Auth] User {user_id} authenticated successfully")
+        logger.info(f"🎉 User {user_id} authenticated, Drive folders verified")
         redirect_url = (
             f"{FRONTEND_URL}?auth_success=true&user_id={user_id}"
             f"&email={user_info['email']}&name={user_info['name']}"
@@ -360,6 +366,7 @@ def oauth_callback(code: str, state: str):
         logger.error(f"[Auth Error] {e}", exc_info=True)
         error_redirect = f"{FRONTEND_URL}?auth_error={str(e)}"
         return RedirectResponse(url=error_redirect, status_code=302)
+
 
 
 
