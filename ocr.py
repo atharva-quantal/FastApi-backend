@@ -41,7 +41,10 @@ def _extract_text(image: Image.Image) -> str:
     try:
         model = genai.GenerativeModel(model_name="gemini-2.0-flash")
         response = model.generate_content([image, prompts["text_prompt"]])
-        return response.text.strip() if response and response.text else ""
+        text = response.text.strip() if response and response.text else ""
+        if not text:
+            return "No valid label found."
+        return text
     except Exception as e:
         return f"[OCR Error: {str(e)}]"
 
@@ -51,6 +54,7 @@ def _categorize_text(ocr_text: str, original_filename: str = None) -> str:
     try:
         model = genai.GenerativeModel(model_name="gemini-2.0-flash")
 
+        # Handle explicit "no label" cases
         if ocr_text.strip() == "No valid label found.":
             if original_filename:
                 base, ext = os.path.splitext(original_filename)
@@ -107,7 +111,6 @@ def process_image(file_or_image, output_dir: str = "processed") -> Dict[str, str
             "original_filename": original_filename if 'original_filename' in locals() else "unknown",
             "error": str(e)
         }
-
 
 
 def process_images_in_batches(
