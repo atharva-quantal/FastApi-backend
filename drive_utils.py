@@ -307,26 +307,29 @@ def get_folder_structure(service, user_id: str) -> Dict[str, str]:
 # -------------------------------
 # OAuth functions - UNIFIED GOOGLE + DRIVE
 # -------------------------------
-def init_auth() -> Dict[str, str]:
-    """Generate Google OAuth consent URL for unified Google + Drive sign-in."""
+def init_auth(force_consent: bool = False) -> Dict[str, str]:
+    """Generate Google OAuth URL for unified Google + Drive sign-in."""
     flow = google_auth_oauthlib.flow.Flow.from_client_config(
         CLIENT_CONFIG, scopes=SCOPES
     )
     flow.redirect_uri = REDIRECT_URI
 
+    # Only show consent screen if explicitly forced
     auth_url, state = flow.authorization_url(
-        access_type="offline", 
-        include_granted_scopes="true", 
-        prompt="consent"
+        access_type="offline",
+        include_granted_scopes="true",
+        prompt="consent" if force_consent else "select_account"
     )
     return {"url": auth_url, "state": state}
 
 
 def oauth_callback(code: str, state: str):
     """
-    Unified callback - Exchange code for tokens, create Drive folders, 
-    then redirect to frontend with success message.
-    Uses 302 redirect to ensure browser performs a GET.
+    OAuth callback:
+      - Exchange code for tokens
+      - Store/reuse refresh tokens
+      - Create Drive folders if needed
+      - Redirect back to frontend with user info
     """
     try:
         flow = google_auth_oauthlib.flow.Flow.from_client_config(
@@ -339,27 +342,25 @@ def oauth_callback(code: str, state: str):
         user_id = get_user_id_from_credentials(credentials)
         user_info = get_user_info_from_credentials(credentials)
 
-        # Store credentials
+        # Reuse or update stored tokens
         USER_TOKENS[user_id] = credentials
 
-        # Create Drive service and folder structure
+        # Ensure Drive folder structure
         service = build("drive", "v3", credentials=credentials)
         structure = get_folder_structure(service, user_id)
 
-        logger.info(f"User authenticated successfully: {user_id}")
+        logger.info(f"[Auth] User {user_id} authenticated successfully")
         redirect_url = (
             f"{FRONTEND_URL}?auth_success=true&user_id={user_id}"
             f"&email={user_info['email']}&name={user_info['name']}"
         )
-        logger.info(f"Redirecting to frontend URL: {redirect_url}")
-
-        # 302 redirect
         return RedirectResponse(url=redirect_url, status_code=302)
 
     except Exception as e:
-        logger.error(f"OAuth callback error: {traceback.format_exc()}")
+        logger.error(f"[Auth Error] {e}", exc_info=True)
         error_redirect = f"{FRONTEND_URL}?auth_error={str(e)}"
         return RedirectResponse(url=error_redirect, status_code=302)
+
 
 
 
